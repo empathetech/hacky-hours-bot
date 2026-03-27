@@ -88,6 +88,8 @@ function routeCommand(command, payload) {
       return handleRandom(payload);
     case 'pick':
       return handlePick(payload);
+    case 'save':
+      return handleSave(payload);
     default:
       return jsonResponse({
         text: 'Unknown command: `' + command + '`. Try `/hacky-hours help` for a list of commands.'

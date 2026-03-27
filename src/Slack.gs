@@ -127,6 +127,92 @@ function getSubmitModalView() {
   };
 }
 
+// ─── Thread Reading ─────────────────────────────────────────────────────────
+
+/**
+ * Reads all messages from a Slack thread using conversations.replies.
+ * Requires channels:history and/or groups:history bot scopes.
+ */
+function getThreadMessages(channel_id, thread_ts) {
+  var token = getSlackBotToken();
+  var url = 'https://slack.com/api/conversations.replies'
+    + '?channel=' + encodeURIComponent(channel_id)
+    + '&ts=' + encodeURIComponent(thread_ts);
+
+  var response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+
+  var result = JSON.parse(response.getContentText());
+  if (!result.ok) {
+    Logger.log('conversations.replies error: ' + result.error);
+    return null;
+  }
+  return result.messages || [];
+}
+
+/**
+ * Formats an array of Slack thread messages as readable markdown.
+ */
+function formatThreadAsMarkdown(messages) {
+  return messages.map(function(msg) {
+    var user = msg.user ? '<@' + msg.user + '>' : 'Unknown';
+    var date = new Date(parseFloat(msg.ts) * 1000);
+    var timestamp = Utilities.formatDate(date, Session.getScriptTimeZone(), 'MMM d, yyyy h:mm a');
+    var text = msg.text || '';
+    return '**' + user + '** (' + timestamp + '):\n' + text;
+  }).join('\n\n');
+}
+
+/**
+ * Returns the submit modal view pre-filled with thread content in description.
+ */
+function getSubmitModalViewWithDescription(description) {
+  return {
+    type: 'modal',
+    callback_id: 'submit_idea',
+    title: { type: 'plain_text', text: 'Save Thread as Idea' },
+    submit: { type: 'plain_text', text: 'Submit' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'input',
+        block_id: 'name_block',
+        label: { type: 'plain_text', text: 'Idea Name' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'name_input',
+          placeholder: { type: 'plain_text', text: 'Give this thread a name' }
+        }
+      },
+      {
+        type: 'input',
+        block_id: 'description_block',
+        label: { type: 'plain_text', text: 'Description' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'description_input',
+          multiline: true,
+          initial_value: description
+        }
+      },
+      {
+        type: 'input',
+        block_id: 'features_block',
+        label: { type: 'plain_text', text: 'Features' },
+        optional: true,
+        element: {
+          type: 'plain_text_input',
+          action_id: 'features_input',
+          multiline: true,
+          placeholder: { type: 'plain_text', text: 'What features or scope would this include?' }
+        }
+      }
+    ]
+  };
+}
+
 // ─── Block Kit Formatting ───────────────────────────────────────────────────
 
 /**

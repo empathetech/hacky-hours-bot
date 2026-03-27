@@ -10,6 +10,4 @@
 
 ## Future
 
-- [ ] `/hacky-hours save` — thread-to-markdown, pre-fill submit modal (V2)
-- [ ] Service account option for Sheet access (V2)
-- [ ] LLM-based thread synthesis for `save` (V2)
+- [ ] LLM-based thread synthesis for `save` — needs design work before building

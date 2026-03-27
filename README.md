@@ -14,6 +14,7 @@ This is a **template repo** — fork it, configure your own Slack workspace and 
 | `/hacky-hours get [name]` | View details for a specific idea |
 | `/hacky-hours random` | Get a random idea from the open pool |
 | `/hacky-hours pick [name]` | Claim an idea for your session |
+| `/hacky-hours save` | Save a thread as an idea (run from inside a thread) |
 
 ## Architecture
 
@@ -99,6 +100,8 @@ In the Apps Script editor:
 2. Scroll to **Scopes → Bot Token Scopes** and add:
    - `commands`
    - `chat:write`
+   - `channels:history` (required for `/hacky-hours save` in public channels)
+   - `groups:history` (required for `/hacky-hours save` in private channels)
 3. Scroll to the top and click **Install to Workspace**, then **Allow**
 4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
 5. Go back to Apps Script and set it as the `SLACK_BOT_TOKEN` Script Property (Step 4)
@@ -133,7 +136,7 @@ In the Apps Script editor:
    - **Command:** `/hacky-hours`
    - **Request URL:** The web app URL from Step 7
    - **Short Description:** "Submit, browse, and claim Hacky Hours ideas"
-   - **Usage Hint:** "help | submit | list | get [name] | random | pick [name]"
+   - **Usage Hint:** "help | submit | list | get [name] | random | pick [name] | save"
 4. Click **Save**
 
 **Set up Interactivity (for modals):**
@@ -171,7 +174,46 @@ A modal should open where you can submit a test idea.
 
 **Tabs not created:** Run the `setupSheetTabs` function manually from the Apps Script editor (Step 6).
 
+**`/hacky-hours save` not working:** Check that:
+- You're running the command from **inside a thread** (not a top-level message)
+- The bot has `channels:history` scope (and `groups:history` for private channels)
+- The bot has been added to the channel (for private channels: invite the bot first)
+
 **Changes not taking effect:** After editing code in Apps Script, you must create a **new deployment** (Deploy → New deployment) or update the existing one (Deploy → Manage deployments → edit → update version). The web app URL stays the same when updating.
+
+## Service Account Setup (Optional)
+
+By default, the bot accesses Google Sheets using the deployer's Google account. For tighter isolation — especially in team environments — you can use a Google Cloud service account instead.
+
+**When to use a service account:**
+- The bot shouldn't be tied to one person's Google account
+- You want the service account to be the sole accessor of the Sheet
+- Multiple people manage the bot and you don't want to share a personal account
+
+**Tradeoffs vs. deployer account:**
+- Tighter isolation (service account only accesses what you share with it)
+- More setup (requires a Google Cloud project)
+- Better for teams (not tied to one person)
+
+### Setup Steps
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com) and create a new project (or use an existing one)
+2. Enable the **Google Sheets API**: APIs & Services → Library → search "Google Sheets API" → Enable
+3. Create a service account: IAM & Admin → Service Accounts → Create Service Account
+   - Name: "hacky-hours-bot" (or whatever you like)
+   - No roles needed (it only accesses Sheets you explicitly share with it)
+4. Create a key: click the service account → Keys → Add Key → JSON
+   - A JSON file will download — this contains the credentials
+5. Share your Google Sheet with the service account's email address (found in the JSON as `client_email`) — give it **Editor** access
+6. In the Apps Script editor, add a new Script Property:
+   - **Property:** `SERVICE_ACCOUNT_CREDENTIALS`
+   - **Value:** paste the entire contents of the downloaded JSON file
+
+> **Important:** The JSON credentials contain a private key. Never commit this to git or share it. Store it only in Script Properties.
+
+When `SERVICE_ACCOUNT_CREDENTIALS` is set, the bot will use the service account to verify Sheet access. If it's not set, the bot falls back to the deployer's account (the default behavior).
+
+See [SECURITY_PRIVACY.md](hacky-hours/02-design/SECURITY_PRIVACY.md) for a detailed risk comparison.
 
 ## Updating After Code Changes
 

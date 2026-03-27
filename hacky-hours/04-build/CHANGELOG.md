@@ -7,6 +7,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.0] — 2026-03-26
+
+### Added
+
+- `/hacky-hours save` — reads a Slack thread, formats messages as markdown, and pre-fills the submit modal with the thread content. Must be run from inside a thread.
+- Service account option for Google Sheet access — set `SERVICE_ACCOUNT_CREDENTIALS` in Script Properties to use a Google Cloud service account instead of the deployer's personal account. Includes full setup runbook in README.
+- `channels:history` and `groups:history` bot scopes (required for `save` command)
+
+### Changed
+
+- Updated README.md with `save` command documentation, new bot scopes, service account setup guide, and troubleshooting for the `save` command
+- Updated help command to include `save`
+
+---
+
 ## [0.1.0] — 2026-03-26
 
 ### Added

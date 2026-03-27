@@ -21,6 +21,7 @@ The bot is a **template** — fork it, configure your environment variables for 
 - `/hacky-hours get [name]` — shows details for a specific idea
 - `/hacky-hours random` — returns a random idea from the open pool
 - `/hacky-hours pick [name]` — moves an idea from "Open Ideas" to "Closed Ideas"
+- `/hacky-hours save` — saves a Slack thread as an idea (formats as markdown, pre-fills submit modal)
 
 ## Where — Platform and Delivery
 

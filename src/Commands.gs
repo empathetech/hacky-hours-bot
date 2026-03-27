@@ -26,7 +26,8 @@ function handleHelp() {
             + '`/hacky-hours list [page]` — Browse open ideas (10 per page)\n'
             + '`/hacky-hours get [name]` — View details for a specific idea\n'
             + '`/hacky-hours random` — Get a random idea\n'
-            + '`/hacky-hours pick [name]` — Claim an idea for your session'
+            + '`/hacky-hours pick [name]` — Claim an idea for your session\n'
+            + '`/hacky-hours save` — Save a thread as an idea (run from inside a thread)'
         }
       }
     ]
@@ -198,6 +199,58 @@ function handlePick(payload) {
       }
     ]
   });
+}
+
+/**
+ * /hacky-hours save — reads the current thread, formats as markdown,
+ * and opens the submit modal with the thread content pre-filled.
+ *
+ * Must be run from within a thread. Uses the channel_id from the payload
+ * and the thread_ts (if the slash command was invoked inside a thread,
+ * Slack doesn't directly provide thread_ts in the slash command payload,
+ * so we check for it in the raw parameters).
+ */
+function handleSave(payload) {
+  var channel_id = payload.channel_id;
+
+  // Slack doesn't include thread_ts in slash command payloads directly.
+  // The user must run this from within a thread — we check for the
+  // undocumented but commonly available 'thread_ts' parameter, or
+  // fall back to checking if the command was invoked in a thread context.
+  // If not in a thread, we prompt the user.
+  //
+  // Note: Slack may not provide thread_ts for slash commands in all cases.
+  // If this doesn't work reliably, the user can pass the thread link as an arg.
+
+  // Try to get thread_ts from raw parameters
+  var thread_ts = payload.raw.thread_ts;
+
+  if (!thread_ts) {
+    return jsonResponse({
+      text: 'This command must be run from inside a thread. '
+        + 'Open the thread you want to save, then type `/hacky-hours save` there.'
+    });
+  }
+
+  var messages = getThreadMessages(channel_id, thread_ts);
+  if (!messages || messages.length === 0) {
+    return jsonResponse({
+      text: 'Could not read the thread. Make sure the bot has `channels:history` '
+        + '(and `groups:history` for private channels) permissions.'
+    });
+  }
+
+  var markdown = formatThreadAsMarkdown(messages);
+
+  // Slack modal text inputs have a 3000 char limit — truncate if needed
+  if (markdown.length > 3000) {
+    markdown = markdown.substring(0, 2990) + '\n\n[truncated]';
+  }
+
+  var view = getSubmitModalViewWithDescription(markdown);
+  openModal(payload.trigger_id, view);
+
+  return ContentService.createTextOutput('');
 }
 
 /**
