@@ -7,6 +7,20 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.1] — 2026-03-26
+
+### Changed
+
+- Replaced manual copy-paste deployment with [clasp](https://github.com/google/clasp) CLI workflow
+- Added `.clasp.json.example` template for per-deployment configuration
+- Added `.clasp.json` and `.clasprc.json` to `.gitignore`
+- Rewrote README setup guide to use clasp for all Apps Script operations (push, deploy, open, run)
+- Added "Development Workflow" section with common clasp commands
+- Added CI/CD instructions with GitHub Actions auto-deploy example
+- Added clasp-specific troubleshooting entries
+
+---
+
 ## [0.2.0] — 2026-03-26
 
 ### Added
