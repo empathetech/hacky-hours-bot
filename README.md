@@ -127,12 +127,15 @@ This opens your Apps Script project in the browser. Then:
 Run the one-time setup function to create the "Open Ideas" and "Closed Ideas" tabs:
 
 ```bash
-clasp run setupSheetTabs
+clasp open-script
 ```
 
-> **Note:** If `clasp run` fails with a permissions error, you may need to enable the Apps Script API and set up OAuth credentials. As a fallback, open the project with `clasp open-script`, select `setupSheetTabs` from the function dropdown, and click Run.
+In the Apps Script editor:
+1. Select `setupSheetTabs` from the function dropdown (top bar)
+2. Click **Run**
+3. If prompted, click **Review permissions** and authorize the script to access Google Sheets
 
-Check your Google Sheet — you should now have both tabs with header rows.
+Check your Google Sheet — you should now have "Open Ideas" and "Closed Ideas" tabs with header rows.
 
 ### Step 8: Create the Slack App
 
@@ -231,7 +234,6 @@ The web app URL stays the same across deployments — no need to update Slack se
 | `clasp deploy` | Create a new deployment version |
 | `clasp deployments` | List all deployments |
 | `clasp logs` | View recent execution logs |
-| `clasp run <function>` | Run a function remotely |
 
 ### CI/CD with GitHub Actions
 
@@ -293,7 +295,7 @@ To set these up:
 
 **"SPREADSHEET_ID not set" error:** Add the `SPREADSHEET_ID` to Script Properties (Step 6).
 
-**Tabs not created:** Run `clasp run setupSheetTabs` or run the function manually from the Apps Script editor.
+**Tabs not created:** Open the project with `clasp open-script`, select `setupSheetTabs` from the function dropdown, and click Run.
 
 **`/hacky-hours save` not working:** Check that:
 - You're running the command from **inside a thread** (not a top-level message)
