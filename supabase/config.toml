@@ -1,6 +1,3 @@
-[project]
-id = ""
-
 [api]
 enabled = true
 port = 54321
@@ -8,5 +5,5 @@ port = 54321
 [db]
 port = 54322
 
-[functions]
+[functions.hacky-hours]
 verify_jwt = false
