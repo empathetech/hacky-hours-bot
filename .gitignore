@@ -12,3 +12,7 @@ node_modules/
 
 # clasp auth credentials (contains OAuth refresh token)
 .clasprc.json
+
+# clasp create generates a root-level appsscript.json — ignore it
+# The source of truth is src/appsscript.json
+/appsscript.json

@@ -61,7 +61,25 @@ This opens a browser window to authenticate with your Google account. The creden
 clasp create --type standalone --title "hacky-hours-bot"
 ```
 
-This creates a new Apps Script project and generates a `.clasp.json` file pointing to it. The `.clasp.json` file is gitignored (it contains your project-specific ID).
+This creates a new Apps Script project and generates a `.clasp.json` file. After creation, you need to do two things:
+
+1. **Set the root directory** — tell clasp to push from `src/` where our code lives:
+   ```bash
+   # Add rootDir to .clasp.json (or manually edit the file)
+   # It should look like: {"scriptId":"...","rootDir":"src"}
+   ```
+   Open `.clasp.json` and add `"rootDir": "src"` so it looks like:
+   ```json
+   {
+     "scriptId": "YOUR_SCRIPT_ID_HERE",
+     "rootDir": "src"
+   }
+   ```
+
+2. **Delete the root-level appsscript.json** that clasp generated — the correct one is already in `src/`:
+   ```bash
+   rm appsscript.json
+   ```
 
 > **Note:** If you already have an Apps Script project, copy `.clasp.json.example` to `.clasp.json` and replace `YOUR_APPS_SCRIPT_PROJECT_ID` with your project's Script ID. You can find it in the Apps Script editor under Project Settings → IDs.
 
