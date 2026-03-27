@@ -58,7 +58,7 @@ This opens a browser window to authenticate with your Google account. The creden
 ### Step 3: Create the Apps Script Project
 
 ```bash
-clasp create --type webapp --title "hacky-hours-bot"
+clasp create --type standalone --title "hacky-hours-bot"
 ```
 
 This creates a new Apps Script project and generates a `.clasp.json` file pointing to it. The `.clasp.json` file is gitignored (it contains your project-specific ID).
