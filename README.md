@@ -105,7 +105,7 @@ This uploads all `.gs` files and `appsscript.json` from the `src/` directory to 
 Script Properties are Apps Script's equivalent of environment variables — encrypted at rest, not visible in source code.
 
 ```bash
-clasp open
+clasp open-script
 ```
 
 This opens your Apps Script project in the browser. Then:
@@ -130,7 +130,7 @@ Run the one-time setup function to create the "Open Ideas" and "Closed Ideas" ta
 clasp run setupSheetTabs
 ```
 
-> **Note:** If `clasp run` fails with a permissions error, you may need to enable the Apps Script API and set up OAuth credentials. As a fallback, open the project with `clasp open`, select `setupSheetTabs` from the function dropdown, and click Run.
+> **Note:** If `clasp run` fails with a permissions error, you may need to enable the Apps Script API and set up OAuth credentials. As a fallback, open the project with `clasp open-script`, select `setupSheetTabs` from the function dropdown, and click Run.
 
 Check your Google Sheet — you should now have both tabs with header rows.
 
@@ -166,7 +166,7 @@ clasp deploy --description "hacky-hours-bot v1"
 Copy the **Deployment ID** from the output. Then get your web app URL:
 
 ```bash
-clasp open --webapp
+clasp open-web-app
 ```
 
 This opens the deployed web app URL in your browser. Copy the URL from the address bar — you'll need it for Step 10.
@@ -226,8 +226,8 @@ The web app URL stays the same across deployments — no need to update Slack se
 |---------|-------------|
 | `clasp push` | Push local code to Apps Script |
 | `clasp pull` | Pull code from Apps Script to local (overwrites local files) |
-| `clasp open` | Open the Apps Script editor in your browser |
-| `clasp open --webapp` | Open the deployed web app URL |
+| `clasp open-script` | Open the Apps Script editor in your browser |
+| `clasp open-web-app` | Open the deployed web app URL |
 | `clasp deploy` | Create a new deployment version |
 | `clasp deployments` | List all deployments |
 | `clasp logs` | View recent execution logs |
