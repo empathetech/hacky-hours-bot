@@ -7,6 +7,40 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] — 2026-03-26
+
+### Changed — Architecture rewrite (Apps Script → Supabase)
+
+This release replaces the entire runtime and storage layer. All Slack-facing behavior is identical.
+
+See [ADR 2026-03-26: Switch to Supabase](../02-design/decisions/2026-03-26-switch-to-supabase.md) for the full decision record.
+
+**Runtime:** Google Apps Script → Supabase Edge Function (Deno/TypeScript)
+**Storage:** Google Sheets → Supabase Postgres
+**Verification:** Deprecated verification token → HMAC-SHA256 signing secret (Slack's recommended best practice)
+
+### Added
+
+- SQL migration with Row Level Security (default deny for `anon` key)
+- HMAC-SHA256 request verification with replay protection (5-minute window)
+- Supabase Edge Function with all commands: help, submit, list, get, random, pick, save
+- Duplicate name validation via Postgres UNIQUE constraint (database-level enforcement)
+- Case-insensitive name lookup via `ilike`
+- CI/CD instructions with GitHub Actions (Supabase CLI)
+- Security section in README with defense-in-depth overview
+- Local development workflow (`supabase start`, `supabase functions serve`)
+- RLS verification step in setup guide
+
+### Removed
+
+- Google Apps Script code (archived to `hacky-hours/archive/apps-script/`)
+- Google Sheets dependency (no Google account needed)
+- clasp CLI dependency
+- Service account option (no longer needed — Supabase project isolation replaces it)
+- Deprecated Slack verification token (replaced by signing secret)
+
+---
+
 ## [0.2.1] — 2026-03-26
 
 ### Changed

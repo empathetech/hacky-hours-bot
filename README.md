@@ -1,8 +1,8 @@
 # hacky-hours-bot
 
-A Slack bot that lets community members submit, browse, and claim project ideas for Hacky Hours sessions. Uses Google Sheets as a backend and Google Apps Script as the runtime — no servers to deploy or maintain.
+A Slack bot that lets community members submit, browse, and claim project ideas for Hacky Hours sessions. Uses Supabase (Postgres + Edge Functions) as the backend — no servers to deploy or maintain.
 
-This is a **template repo** — fork it, configure your own Slack workspace and Google Sheet, and deploy. No hardcoded relationships with any particular accounts.
+This is a **template repo** — fork it, configure your own Slack workspace and Supabase project, and deploy. No hardcoded relationships with any particular accounts.
 
 ## Commands
 
@@ -19,10 +19,10 @@ This is a **template repo** — fork it, configure your own Slack workspace and 
 ## Architecture
 
 ```
-Slack slash command → Google Apps Script web app → Google Sheets
+Slack slash command → Supabase Edge Function → Supabase Postgres
 ```
 
-The bot receives commands from Slack, reads/writes a Google Sheet, and responds with Block Kit formatted messages. For the `submit` command, it opens a Slack modal and handles the submission callback.
+The bot receives commands from Slack via a serverless Edge Function (Deno/TypeScript), reads/writes a Postgres database, and responds with Block Kit formatted messages. Request verification uses HMAC-SHA256 (Slack's recommended best practice). Row Level Security (RLS) is enabled on all tables.
 
 See [ARCHITECTURE.md](hacky-hours/02-design/ARCHITECTURE.md) for full details.
 
@@ -30,10 +30,16 @@ See [ARCHITECTURE.md](hacky-hours/02-design/ARCHITECTURE.md) for full details.
 
 ### Prerequisites
 
-- A Google account
+- A [Supabase](https://supabase.com) account (free tier works)
 - A Slack workspace where you have permission to install apps
-- [Node.js](https://nodejs.org) (v16+) — for the clasp CLI
-- [Google Apps Script API](https://script.google.com/home/usersettings) enabled (toggle it on)
+- [Supabase CLI](https://supabase.com/docs/guides/cli) installed:
+  ```bash
+  # macOS
+  brew install supabase/tap/supabase
+
+  # npm (any platform)
+  npm install -g supabase
+  ```
 
 ### Step 1: Fork and Clone
 
@@ -44,110 +50,50 @@ git clone https://github.com/YOUR_USERNAME/hacky-hours-bot.git
 cd hacky-hours-bot
 ```
 
-### Step 2: Install and Authenticate clasp
+### Step 2: Create a Supabase Project
 
-[clasp](https://github.com/google/clasp) is Google's official CLI for Apps Script. It lets you push code from your local repo instead of copy-pasting in the browser.
+1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) and click **New Project**
+2. Name it "hacky-hours-bot" (or whatever you like)
+3. Set a database password (save it somewhere safe — you won't need it for this setup, but you'll need it if you ever connect directly)
+4. Choose a region close to your users
+5. Click **Create new project** and wait for it to provision
 
-```bash
-npm install -g @google/clasp
-clasp login
-```
-
-This opens a browser window to authenticate with your Google account. The credentials are saved locally in `~/.clasprc.json`.
-
-### Step 3: Create the Apps Script Project
+### Step 3: Link Your Local Repo to Supabase
 
 ```bash
-clasp create --type standalone --title "hacky-hours-bot"
+supabase login
+supabase link --project-ref YOUR_PROJECT_REF
 ```
 
-This creates a new Apps Script project and generates a `.clasp.json` file. After creation, you need to do two things:
+Your project ref is the string in your Supabase dashboard URL: `https://supabase.com/dashboard/project/YOUR_PROJECT_REF`
 
-1. **Set the root directory** — tell clasp to push from `src/` where our code lives:
-   ```bash
-   # Add rootDir to .clasp.json (or manually edit the file)
-   # It should look like: {"scriptId":"...","rootDir":"src"}
-   ```
-   Open `.clasp.json` and add `"rootDir": "src"` so it looks like:
-   ```json
-   {
-     "scriptId": "YOUR_SCRIPT_ID_HERE",
-     "rootDir": "src"
-   }
-   ```
+### Step 4: Run Database Migrations
 
-2. **Delete the root-level appsscript.json** that clasp generated — the correct one is already in `src/`:
-   ```bash
-   rm appsscript.json
-   ```
-
-> **Note:** If you already have an Apps Script project, copy `.clasp.json.example` to `.clasp.json` and replace `YOUR_APPS_SCRIPT_PROJECT_ID` with your project's Script ID. You can find it in the Apps Script editor under Project Settings → IDs.
-
-### Step 4: Push Code to Apps Script
+This creates the `open_ideas` and `closed_ideas` tables with Row Level Security:
 
 ```bash
-clasp push
+supabase db push
 ```
 
-This uploads all `.gs` files and `appsscript.json` from the `src/` directory to your Apps Script project. Run this every time you make code changes.
+**Verify RLS is working:** Go to the Supabase dashboard → SQL Editor and run:
 
-### Step 5: Create the Google Sheet
-
-1. Go to [Google Sheets](https://sheets.google.com) and create a new spreadsheet
-2. Name it something like "Hacky Hours Ideas"
-3. Copy the **Spreadsheet ID** from the URL — it's the long string between `/d/` and `/edit`:
-   ```
-   https://docs.google.com/spreadsheets/d/THIS_IS_THE_SPREADSHEET_ID/edit
-   ```
-
-### Step 6: Set Script Properties
-
-Script Properties are Apps Script's equivalent of environment variables — encrypted at rest, not visible in source code.
-
-```bash
-clasp open-script
+```sql
+SET role anon;
+SELECT * FROM open_ideas;
+RESET role;
 ```
 
-This opens your Apps Script project in the browser. Then:
+This should return **zero rows** even if there's data — confirming the `anon` key has no access.
 
-1. Click the gear icon (⚙️ Project Settings)
-2. Scroll down to **Script Properties**
-3. Add the following properties:
-
-| Property | Value | Where to find it |
-|----------|-------|-----------------|
-| `SPREADSHEET_ID` | The ID from Step 5 | Google Sheets URL |
-| `SLACK_VERIFICATION_TOKEN` | Your Slack app's verification token | (Created in Step 8) Slack App → Basic Information → Verification Token |
-| `SLACK_BOT_TOKEN` | Your Slack bot's OAuth token | (Created in Step 8) Slack App → OAuth & Permissions → Bot User OAuth Token |
-
-> **Important:** Never paste these values into source files or commit them to git.
-
-### Step 7: Set Up Sheet Tabs
-
-Run the one-time setup function to create the "Open Ideas" and "Closed Ideas" tabs:
-
-```bash
-clasp open-script
-```
-
-In the Apps Script editor:
-1. Select `setupSheetTabs` from the function dropdown (top bar)
-2. Click **Run**
-3. If prompted, click **Review permissions** and authorize the script to access Google Sheets
-
-Check your Google Sheet — you should now have "Open Ideas" and "Closed Ideas" tabs with header rows.
-
-### Step 8: Create the Slack App
+### Step 5: Create the Slack App
 
 1. Go to [Slack API: Your Apps](https://api.slack.com/apps) and click **Create New App**
 2. Choose **From scratch**
 3. Name it "Hacky Hours" (or whatever you like) and select your workspace
-4. After creation, you'll be on the app's **Basic Information** page
 
-**Get the Verification Token:**
+**Get the Signing Secret:**
 - On the Basic Information page, scroll to **App Credentials**
-- Copy the **Verification Token**
-- Set it as the `SLACK_VERIFICATION_TOKEN` Script Property (Step 6)
+- Copy the **Signing Secret** (not the verification token — we use the more secure HMAC-SHA256 method)
 
 **Set up the Bot Token:**
 1. In the left sidebar, click **OAuth & Permissions**
@@ -158,32 +104,39 @@ Check your Google Sheet — you should now have "Open Ideas" and "Closed Ideas" 
    - `groups:history` (required for `/hacky-hours save` in private channels)
 3. Scroll to the top and click **Install to Workspace**, then **Allow**
 4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
-5. Set it as the `SLACK_BOT_TOKEN` Script Property (Step 6)
 
-### Step 9: Deploy as a Web App
+### Step 6: Set Environment Variables
 
-```bash
-clasp deploy --description "hacky-hours-bot v1"
-```
-
-Copy the **Deployment ID** from the output. Then get your web app URL:
+Store your Slack secrets as Supabase Edge Function secrets:
 
 ```bash
-clasp open-web-app
+supabase secrets set SLACK_SIGNING_SECRET=your_signing_secret_here
+supabase secrets set SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 ```
 
-This opens the deployed web app URL in your browser. Copy the URL from the address bar — you'll need it for Step 10.
+> **Note:** `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are automatically available in Edge Functions — you don't need to set them.
 
-> **Note:** The web app is accessible to "Anyone" (configured in `appsscript.json`). This is required so Slack can send requests to it. The verification token check ensures only legitimate Slack requests are processed.
+### Step 7: Deploy the Edge Function
 
-### Step 10: Connect Slack to Apps Script
+```bash
+supabase functions deploy hacky-hours --no-verify-jwt
+```
+
+The `--no-verify-jwt` flag is required because Slack sends requests without a Supabase JWT. We verify requests using the Slack signing secret instead.
+
+Copy the function URL from the output — it will look like:
+```
+https://YOUR_PROJECT_REF.supabase.co/functions/v1/hacky-hours
+```
+
+### Step 8: Connect Slack to Supabase
 
 **Set up the Slash Command:**
 1. In your Slack app settings, click **Slash Commands** in the left sidebar
 2. Click **Create New Command**
 3. Fill in:
    - **Command:** `/hacky-hours`
-   - **Request URL:** The web app URL from Step 9
+   - **Request URL:** The Edge Function URL from Step 7
    - **Short Description:** "Submit, browse, and claim Hacky Hours ideas"
    - **Usage Hint:** "help | submit | list | get [name] | random | pick [name] | save"
 4. Click **Save**
@@ -191,10 +144,10 @@ This opens the deployed web app URL in your browser. Copy the URL from the addre
 **Set up Interactivity (for modals):**
 1. In the left sidebar, click **Interactivity & Shortcuts**
 2. Toggle **Interactivity** to **On**
-3. Set **Request URL** to the same web app URL from Step 9
+3. Set **Request URL** to the same Edge Function URL from Step 7
 4. Click **Save Changes**
 
-### Step 11: Test
+### Step 9: Test
 
 In your Slack workspace, type:
 
@@ -212,40 +165,61 @@ A modal should open where you can submit a test idea.
 
 ## Development Workflow
 
-### Making Changes
-
-Edit the `.gs` files in `src/`, then push and deploy:
+### Local Development
 
 ```bash
-clasp push              # upload code to Apps Script
-clasp deploy --description "description of changes"
+supabase start                          # start local Supabase stack
+supabase functions serve hacky-hours    # serve the function locally with hot reload
 ```
 
-The web app URL stays the same across deployments — no need to update Slack settings.
+Use a tool like [ngrok](https://ngrok.com) to expose your local function to Slack for testing:
 
-### Useful clasp Commands
+```bash
+ngrok http 54321
+```
+
+Then update your Slack app's Request URLs to point to the ngrok URL.
+
+### Deploying Changes
+
+```bash
+supabase functions deploy hacky-hours --no-verify-jwt
+```
+
+The function URL stays the same — no need to update Slack settings.
+
+### Database Migrations
+
+```bash
+supabase migration new my_change_name   # create a new migration file
+# edit the file in supabase/migrations/
+supabase db push                        # apply to remote database
+supabase db reset                       # reset local database to migrations
+```
+
+### Useful Commands
 
 | Command | What it does |
 |---------|-------------|
-| `clasp push` | Push local code to Apps Script |
-| `clasp pull` | Pull code from Apps Script to local (overwrites local files) |
-| `clasp open-script` | Open the Apps Script editor in your browser |
-| `clasp open-web-app` | Open the deployed web app URL |
-| `clasp deploy` | Create a new deployment version |
-| `clasp deployments` | List all deployments |
-| `clasp logs` | View recent execution logs |
+| `supabase functions deploy hacky-hours --no-verify-jwt` | Deploy the Edge Function |
+| `supabase functions serve hacky-hours` | Run locally with hot reload |
+| `supabase functions logs hacky-hours` | View function logs |
+| `supabase db push` | Apply migrations to remote database |
+| `supabase db reset` | Reset local database to match migrations |
+| `supabase secrets list` | List configured secrets |
+| `supabase secrets set KEY=value` | Set a secret |
 
 ### CI/CD with GitHub Actions
 
-You can automate deployment on push to `main`. Create `.github/workflows/deploy.yml`:
+Automate deployment on push to `main`. Create `.github/workflows/deploy.yml`:
 
 ```yaml
-name: Deploy to Apps Script
+name: Deploy to Supabase
 
 on:
   push:
     branches: [main]
-    paths: ['src/**']
+    paths: ['supabase/**']
 
 jobs:
   deploy:
@@ -253,95 +227,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - uses: supabase/setup-cli@v1
 
-      - name: Install clasp
-        run: npm install -g @google/clasp
+      - name: Link project
+        run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
-      - name: Authenticate clasp
-        run: echo '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
+      - name: Push migrations
+        run: supabase db push
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
-      - name: Configure project
-        run: echo '${{ secrets.CLASP_JSON }}' > .clasp.json
-
-      - name: Push and deploy
-        run: |
-          clasp push
-          clasp deploy --description "Auto-deploy from commit ${{ github.sha }}"
+      - name: Deploy function
+        run: supabase functions deploy hacky-hours --no-verify-jwt
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 ```
 
 **Required GitHub Secrets:**
-- `CLASPRC_JSON` — contents of your `~/.clasprc.json` (OAuth refresh token)
-- `CLASP_JSON` — contents of your `.clasp.json` (Apps Script project ID)
+- `SUPABASE_ACCESS_TOKEN` — your Supabase personal access token (dashboard → Account → Access Tokens)
+- `SUPABASE_PROJECT_REF` — your project reference ID
 
-To set these up:
-1. Run `cat ~/.clasprc.json` and copy the output
-2. Go to your GitHub repo → Settings → Secrets and variables → Actions → New repository secret
-3. Name: `CLASPRC_JSON`, Value: paste the contents
-4. Repeat for `CLASP_JSON` with the contents of your `.clasp.json`
+## Security
 
-> **Security note:** The `CLASPRC_JSON` contains an OAuth refresh token that grants access to your Google account's Apps Script projects. Treat it like a password — only store it in GitHub Secrets, never in code.
+This bot implements defense-in-depth:
+
+1. **Request verification:** HMAC-SHA256 signing secret with replay protection (rejects requests older than 5 minutes)
+2. **Database access:** Row Level Security enabled with default deny — the `anon` key has zero access
+3. **Secrets management:** All secrets stored as Supabase Edge Function environment variables — never in code
+4. **Input validation:** Parameterized queries via Supabase client library, name uniqueness enforced at the database level
+
+See [SECURITY_PRIVACY.md](hacky-hours/02-design/SECURITY_PRIVACY.md) for the full threat model.
 
 ## Troubleshooting
 
-**"Unauthorized" response:** Your `SLACK_VERIFICATION_TOKEN` in Script Properties doesn't match the token in your Slack app's Basic Information page. Double-check both values.
+**"Unauthorized" response:** Your `SLACK_SIGNING_SECRET` doesn't match. Run `supabase secrets list` to verify it's set, and compare against your Slack app's Basic Information → Signing Secret.
 
 **Modal doesn't open:** Check that:
-- `SLACK_BOT_TOKEN` is set correctly in Script Properties (starts with `xoxb-`)
-- The bot has the `commands` and `chat:write` scopes
-- The Interactivity Request URL matches your Apps Script web app URL
+- `SLACK_BOT_TOKEN` is set correctly (`supabase secrets list`)
+- The bot has `commands` and `chat:write` scopes
+- The Interactivity Request URL matches your Edge Function URL
 
-**"SPREADSHEET_ID not set" error:** Add the `SPREADSHEET_ID` to Script Properties (Step 6).
-
-**Tabs not created:** Open the project with `clasp open-script`, select `setupSheetTabs` from the function dropdown, and click Run.
+**Database errors:** Run `supabase db push` to ensure migrations are applied. Check the Supabase dashboard → Table Editor to see if the tables exist.
 
 **`/hacky-hours save` not working:** Check that:
 - You're running the command from **inside a thread** (not a top-level message)
 - The bot has `channels:history` scope (and `groups:history` for private channels)
 - The bot has been added to the channel (for private channels: invite the bot first)
 
-**`clasp push` fails:** Make sure:
-- You're authenticated (`clasp login`)
-- The Apps Script API is enabled at https://script.google.com/home/usersettings
-- `.clasp.json` exists and has a valid `scriptId`
-
-**Changes not taking effect after `clasp push`:** You also need to run `clasp deploy` to create a new deployment version. Just pushing updates the project code but not the live web app.
-
-## Service Account Setup (Optional)
-
-By default, the bot accesses Google Sheets using the deployer's Google account. For tighter isolation — especially in team environments — you can use a Google Cloud service account instead.
-
-**When to use a service account:**
-- The bot shouldn't be tied to one person's Google account
-- You want the service account to be the sole accessor of the Sheet
-- Multiple people manage the bot and you don't want to share a personal account
-
-**Tradeoffs vs. deployer account:**
-- Tighter isolation (service account only accesses what you share with it)
-- More setup (requires a Google Cloud project)
-- Better for teams (not tied to one person)
-
-### Setup Steps
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com) and create a new project (or use an existing one)
-2. Enable the **Google Sheets API**: APIs & Services → Library → search "Google Sheets API" → Enable
-3. Create a service account: IAM & Admin → Service Accounts → Create Service Account
-   - Name: "hacky-hours-bot" (or whatever you like)
-   - No roles needed (it only accesses Sheets you explicitly share with it)
-4. Create a key: click the service account → Keys → Add Key → JSON
-   - A JSON file will download — this contains the credentials
-5. Share your Google Sheet with the service account's email address (found in the JSON as `client_email`) — give it **Editor** access
-6. In the Apps Script editor, add a new Script Property:
-   - **Property:** `SERVICE_ACCOUNT_CREDENTIALS`
-   - **Value:** paste the entire contents of the downloaded JSON file
-
-> **Important:** The JSON credentials contain a private key. Never commit this to git or share it. Store it only in Script Properties.
-
-When `SERVICE_ACCOUNT_CREDENTIALS` is set, the bot will use the service account to verify Sheet access. If it's not set, the bot falls back to the deployer's account (the default behavior).
-
-See [SECURITY_PRIVACY.md](hacky-hours/02-design/SECURITY_PRIVACY.md) for a detailed risk comparison.
+**Function not responding:** Check logs with `supabase functions logs hacky-hours`. Common issues:
+- Missing secrets (run `supabase secrets list`)
+- Deployment didn't complete (redeploy with `supabase functions deploy hacky-hours --no-verify-jwt`)
 
 ## License
 

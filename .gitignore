@@ -6,13 +6,3 @@ id_rsa*
 id_ed25519*
 .DS_Store
 node_modules/
-
-# clasp — per-deployment config (contains your Apps Script project ID)
-.clasp.json
-
-# clasp auth credentials (contains OAuth refresh token)
-.clasprc.json
-
-# clasp create generates a root-level appsscript.json — ignore it
-# The source of truth is src/appsscript.json
-/appsscript.json
