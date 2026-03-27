@@ -2,23 +2,25 @@
 
 **Level 3 — Roadmap** | hacky-hours-bot
 
+> **Note:** Updated for Supabase architecture. See [ADR 2026-03-26](../02-design/decisions/2026-03-26-switch-to-supabase.md). MVP items 1–10 and V2 items 11–12 were completed under the previous Apps Script architecture (v0.1.0–v0.2.1). This roadmap reflects the rewrite.
+
 ---
 
-## MVP — Community members can submit, browse, and claim ideas through Slack
+## v0.3.0 — Supabase rewrite: same features, new architecture
 
-1. **Apps Script scaffold** — `doPost` entry point, command router that parses the slash command and dispatches to handler functions
-2. **Request verification** — Slack signing secret (HMAC-SHA256) validation. Investigate Apps Script header access; implement fallback (verification token) if needed. Store secrets in Script Properties.
-3. **Google Sheet integration** — connect to spreadsheet via `SPREADSHEET_ID` Script Property. Set up "Open Ideas" and "Closed Ideas" tabs with schema from DATA_MODEL.md.
-4. **`/hacky-hours help`** — static Block Kit response listing all available commands. Validates the full round-trip (Slack → Apps Script → Slack).
-5. **`/hacky-hours submit`** — two-way modal flow. Opens modal via `views.open`, handles `view_submission` payload. Validates duplicate names (returns modal error if taken). Writes to "Open Ideas" tab.
-6. **`/hacky-hours list [page]`** — Block Kit formatted list of open ideas. 10 per page, default page 1. Footer shows "Page X of Y — use `/hacky-hours list N` for next page."
-7. **`/hacky-hours get [name]`** — Block Kit formatted detail view of a single idea (name, submitter, description, features, submitted date).
-8. **`/hacky-hours random`** — returns a random idea from the open pool, same detail format as `get`.
-9. **`/hacky-hours pick [name]`** — moves idea from Open to Closed Ideas. Records `picked_by` (Slack user ID) and `picked_at` (timestamp). Returns confirmation with the idea details.
-10. **README.md runbook** — step-by-step setup guide: fork repo, create Google Sheet, create Slack App (slash command, interactivity URL, bot token scopes), deploy Apps Script, set Script Properties, connect and test.
+1. **Supabase project setup** — SQL migration for `open_ideas` and `closed_ideas` tables with RLS enabled (default deny for `anon` key)
+2. **Edge Function scaffold** — HTTP handler, request parser, command router (TypeScript/Deno)
+3. **HMAC-SHA256 request verification** — proper signing secret verification using HTTP headers (replaces deprecated verification token)
+4. **`/hacky-hours help`** — Block Kit command list
+5. **`/hacky-hours submit`** — modal flow with duplicate name validation via Postgres UNIQUE constraint
+6. **`/hacky-hours list [page]`** — paginated Block Kit list (10/page) via SQL LIMIT/OFFSET
+7. **`/hacky-hours get [name]`** — Block Kit detail view via case-insensitive SQL lookup
+8. **`/hacky-hours random`** — random idea via `ORDER BY random() LIMIT 1`
+9. **`/hacky-hours pick [name]`** — move to `closed_ideas` with `picked_by`/`picked_at`
+10. **`/hacky-hours save`** — thread-to-markdown, pre-fill submit modal
+11. **README.md runbook** — Supabase project setup, migrations, Edge Function deployment, Slack app configuration
+12. **Archive Apps Script code** — move `src/` to `hacky-hours/archive/apps-script/`
 
-## V2+
+## Future
 
-11. **`/hacky-hours save`** — reads a Slack thread via `conversations.replies`, formats messages as markdown (username, timestamp, text), pre-fills the submit modal's description field. Requires additional bot scopes: `channels:history`, `groups:history`.
-12. **Service account option** — alternative to deployer-account Sheet access. Runbook for both pathways with risk comparison. See SECURITY_PRIVACY.md.
-13. **LLM-based thread synthesis** — optional enhancement to `save` that uses an LLM API to extract structured name/description/features from thread content. Adds an external API dependency and per-call cost.
+- [ ] LLM-based thread synthesis for `save` — needs design work before building

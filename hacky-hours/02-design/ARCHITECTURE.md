@@ -2,29 +2,31 @@
 
 **Level 2 — Design** | hacky-hours-bot
 
+> **Note:** This document was rewritten as part of [ADR 2026-03-26: Switch to Supabase](decisions/2026-03-26-switch-to-supabase.md). The previous Apps Script + Google Sheets architecture is archived.
+
 ---
 
 ## System Overview
 
-Three components connected by HTTP:
+Two components on a single platform (Supabase), connected to Slack via HTTP:
 
 ```mermaid
 flowchart LR
     U[Slack User] -->|slash command| SA[Slack API]
-    SA -->|HTTP POST| GAS[Google Apps Script]
-    GAS -->|read/write| GS[Google Sheets]
-    GAS -->|views.open\nBlock Kit responses| SA
-    SA -->|interaction payload| GAS
+    SA -->|HTTP POST| EF[Supabase Edge Function]
+    EF -->|query/insert| PG[Supabase Postgres]
+    EF -->|views.open\nBlock Kit responses| SA
+    SA -->|interaction payload| EF
     SA -->|modal / message| U
 ```
 
 **Flow summary:**
 1. User types a slash command in Slack
-2. Slack sends an HTTP POST to the Apps Script web app URL
-3. Apps Script parses the command, reads/writes Google Sheets, and responds
-4. For `/hacky-hours submit`: Apps Script calls back to Slack to open a modal, then handles the submission payload when the user completes it
+2. Slack sends an HTTP POST to the Edge Function URL
+3. Edge Function parses the command, queries/writes Postgres, and responds
+4. For `/hacky-hours submit`: Edge Function calls back to Slack to open a modal, then handles the submission payload when the user completes it
 
-This is a **two-way integration** — Apps Script both receives requests from Slack and calls back to the Slack API.
+This is a **two-way integration** — the Edge Function both receives requests from Slack and calls back to the Slack API.
 
 ---
 
@@ -35,68 +37,63 @@ This is a **two-way integration** — Apps Script both receives requests from Sl
 **Role:** User interface — all interaction happens through Slack slash commands and modals.
 
 **Configuration required:**
-- Slash command (`/hacky-hours`) pointing to the Apps Script web app URL
-- Interactivity Request URL (same Apps Script URL) for modal submissions
-- Bot Token Scopes: `commands`, `chat:write`
+- Slash command (`/hacky-hours`) pointing to the Edge Function URL
+- Interactivity Request URL (same Edge Function URL) for modal submissions
+- Bot Token Scopes: `commands`, `chat:write`, `channels:history`, `groups:history`
 
 **UI approach:** Block Kit for all responses. Modals for `submit`. Formatted blocks for `list`, `get`, `random`, `pick`.
 
-### 2. Google Apps Script
+### 2. Supabase Edge Function
 
-**Role:** Runtime and business logic. Deployed as a web app — Google manages hosting.
+**Role:** Runtime and business logic. Serverless function (Deno/TypeScript) deployed to Supabase's edge network.
 
 **Responsibilities:**
-- `doPost(e)` — entry point for all incoming requests (slash commands + interaction payloads)
-- Verify request authenticity (see Security section)
+- HTTP handler — entry point for all incoming requests (slash commands + interaction payloads)
+- Verify request authenticity via Slack signing secret (HMAC-SHA256 — now possible since Edge Functions have full access to request headers)
 - Route commands to handler functions
-- Read/write Google Sheets via the Sheets API (built into Apps Script)
+- Read/write Postgres via the Supabase client library
 - Call Slack API (`views.open`) to launch modals
 - Format responses using Block Kit JSON
 
-**Deployment:** Apps Script web app, "Execute as me", accessible to "Anyone" (so Slack can reach it).
+**Key advantage over Apps Script:** Full access to HTTP request headers enables proper HMAC-SHA256 signing secret verification — the gold standard that was not possible in Apps Script.
 
-### 3. Google Sheets
+### 3. Supabase Postgres
 
-**Role:** Data store. Two tabs in a single spreadsheet.
+**Role:** Data store. Two tables in a single database.
 
-- **"Open Ideas"** — active ideas available for browsing/claiming
-- **"Closed Ideas"** — ideas that have been picked/claimed
+- **`open_ideas`** — active ideas available for browsing/claiming
+- **`closed_ideas`** — ideas that have been picked/claimed
 
-Schema is defined in DATA_MODEL.md.
+Schema is defined in DATA_MODEL.md. Row Level Security is enabled on both tables.
 
 ---
 
 ## Configuration Surface
 
-All configuration lives in **Google Apps Script Script Properties** (Settings → Script Properties in the Apps Script editor). Nothing is hardcoded — this is a template repo designed to be forked and configured per-deployment.
+All configuration lives in **environment variables** set via the Supabase dashboard or CLI. Nothing is hardcoded — this is a template repo designed to be forked and configured per-deployment.
 
-| Property | Purpose | Source |
+| Variable | Purpose | Source |
 |----------|---------|--------|
-| `SLACK_VERIFICATION_TOKEN` | Request verification (see below) | Slack App → Basic Information → Verification Token |
+| `SLACK_SIGNING_SECRET` | HMAC-SHA256 request verification | Slack App → Basic Information → Signing Secret |
 | `SLACK_BOT_TOKEN` | Calling Slack API (e.g., `views.open`) | Slack App → OAuth & Permissions → Bot User OAuth Token |
-| `SPREADSHEET_ID` | Google Sheet to read/write | The ID from the Google Sheets URL |
+| `SUPABASE_URL` | Supabase project URL | Supabase dashboard → Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access (bypasses RLS) | Supabase dashboard → Settings → API → service_role key |
 
-No other secrets or credentials are needed. The Apps Script runs under the deployer's Google account and inherits Sheets access from that account.
+The Edge Function runs within Supabase's infrastructure, so `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are automatically available as environment variables in Edge Functions — no manual configuration needed for these two.
 
 ---
 
 ## Request Verification
 
-**Approach:** Slack Verification Token — static token comparison.
+**Approach:** Slack Signing Secret with HMAC-SHA256 — Slack's recommended and current best practice.
 
-**Why not HMAC-SHA256 (Slack's recommended approach)?** Google Apps Script web apps do not expose HTTP request headers in `doPost(e)`. The signing secret approach requires `X-Slack-Signature` and `X-Slack-Request-Timestamp` headers, which are not accessible in this runtime. This is a known Apps Script limitation.
+**How it works:**
+1. Slack sends `X-Slack-Signature` and `X-Slack-Request-Timestamp` headers with every request
+2. Edge Function reconstructs the signature: `HMAC-SHA256(signing_secret, "v0:" + timestamp + ":" + raw_body)`
+3. Compare computed signature to the header value — reject if mismatch
+4. Reject if timestamp is more than 5 minutes old (replay protection)
 
-**How verification works:**
-1. Slack sends a verification token in every request body (form-encoded for slash commands, JSON for interaction payloads)
-2. Apps Script compares the token to the value stored in Script Properties (`SLACK_VERIFICATION_TOKEN`)
-3. Reject the request if the tokens don't match
-
-**Known limitations:**
-- The verification token is sent in plaintext — it verifies the sender but does not protect against replay attacks
-- Slack has deprecated verification tokens in favor of signing secrets, but tokens remain functional
-- The Apps Script web app URL provides an additional layer of obscurity (it's a long, unique URL), but this is not a security control
-
-**Accepted risk:** This is the best verification available within Apps Script's constraints. The data sensitivity is low (idea names and Slack user IDs). If stronger verification is needed in the future, the runtime would need to move off Apps Script (e.g., to Cloud Functions).
+**This was not possible in Apps Script** (no header access in `doPost`). Supabase Edge Functions have full access to request headers, so we can now implement the gold standard verification. See [ADR 2026-03-26](decisions/2026-03-26-switch-to-supabase.md) for context.
 
 ---
 
@@ -106,21 +103,39 @@ No other secrets or credentials are needed. The Apps Script runs under the deplo
 sequenceDiagram
     participant U as Slack User
     participant S as Slack API
-    participant G as Apps Script
-    participant D as Google Sheets
+    participant E as Edge Function
+    participant D as Postgres
 
     U->>S: /hacky-hours submit
-    S->>G: HTTP POST (slash command payload + trigger_id)
-    G->>S: POST views.open (modal definition + trigger_id)
+    S->>E: HTTP POST (slash command payload + trigger_id)
+    E->>S: POST views.open (modal definition + trigger_id)
     S->>U: Display modal
     U->>S: Fill out and submit modal
-    S->>G: HTTP POST (interaction payload: view_submission)
-    G->>D: Append row to "Open Ideas"
-    G->>S: Response (success message)
+    S->>E: HTTP POST (interaction payload: view_submission)
+    E->>D: INSERT into open_ideas
+    E->>S: Response (success message)
     S->>U: Show confirmation
 ```
 
 The `trigger_id` is ephemeral (valid for ~3 seconds) — the `views.open` call must happen immediately in the initial request handler, not asynchronously.
+
+---
+
+## Thread Save Command
+
+`/hacky-hours save` — formats a Slack thread as markdown and pre-fills the submit modal.
+
+**Flow:**
+1. User runs `/hacky-hours save` in or referencing a thread
+2. Edge Function calls `conversations.replies` to read the thread
+3. Formats messages as markdown (username, timestamp, message text)
+4. Opens the `submit` modal with the formatted thread pre-filled in `description`; `name` and `features` left blank for the user
+5. User edits and submits as normal — reuses existing submit flow
+
+**Additional requirements:**
+- Bot token scopes: `channels:history` (public), `groups:history` (private channels)
+- One Slack API call: `conversations.replies`
+- Thread context: `channel_id` and `thread_ts` from the slash command payload
 
 ---
 
@@ -129,40 +144,39 @@ The `trigger_id` is ephemeral (valid for ~3 seconds) — the `views.open` call m
 Setup documentation lives in the project **README.md** at the repo root. It must cover, in order:
 
 1. **Fork and clone** the repo
-2. **Create a Google Sheet** with the required tabs and columns (link to DATA_MODEL.md)
-3. **Create a Slack App** — configure slash command, interactivity URL, bot token scopes
-4. **Deploy the Apps Script** — paste/push code, deploy as web app
-5. **Set Script Properties** — `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SPREADSHEET_ID`
-6. **Connect** — set the Apps Script web app URL as the Slack slash command endpoint and interactivity URL
-7. **Test** — verify with `/hacky-hours list` in Slack
-
-Each step should include exact UI paths (e.g., "Slack App → OAuth & Permissions → Bot User OAuth Token") since these integrations are configured through web UIs, not CLI tools.
+2. **Create a Supabase project** — get project URL and API keys
+3. **Run database migrations** — creates tables with RLS policies
+4. **Create a Slack App** — configure slash command, interactivity URL, bot token scopes
+5. **Deploy the Edge Function** — `supabase functions deploy`
+6. **Set environment variables** — `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`
+7. **Connect** — set the Edge Function URL as the Slack slash command endpoint and interactivity URL
+8. **Test** — verify with `/hacky-hours help` in Slack
 
 ---
 
-## V2 — Thread Save Command
+## Development Workflow
 
-`/hacky-hours save` — formats a Slack thread as markdown and pre-fills the submit modal.
+```bash
+# Start local development
+supabase start                          # local Supabase stack (Postgres, Edge Functions)
+supabase functions serve hacky-hours    # serve the function locally with hot reload
 
-**Flow:**
-1. User runs `/hacky-hours save` in or referencing a thread
-2. Apps Script calls `conversations.replies` to read the thread
-3. Formats messages as markdown (username, timestamp, message text)
-4. Opens the `submit` modal with the formatted thread pre-filled in `description`; `name` and `features` left blank for the user
-5. User edits and submits as normal — reuses existing submit flow
+# Deploy
+supabase db push                        # apply migrations to remote database
+supabase functions deploy hacky-hours   # deploy the Edge Function
 
-**Additional requirements:**
-- Bot token scopes: `channels:history` (public), `groups:history` (private channels)
-- One new Slack API call: `conversations.replies`
-- Thread context: `channel_id` and `thread_ts` from the slash command payload
-
-**Intent:** The saved idea becomes raw material for later synthesis — e.g., feeding it into an IDEATION.md doc and using the `/hacky-hours` Claude command to structure it. The bot does formatting, not synthesis.
+# Useful commands
+supabase migration new <name>           # create a new migration file
+supabase db reset                       # reset local database to migrations
+supabase functions logs hacky-hours     # view function logs
+```
 
 ---
 
 ## Design Decisions
 
-- **Google Apps Script over a standalone server** — zero infrastructure to maintain, free tier is generous, built-in Sheets integration. Tradeoff: limited runtime environment, can't install npm packages, cold start latency.
-- **Block Kit over plain text** — better UX, structured formatting, modals for input. Minimal extra lift over plain text responses.
-- **Script Properties over hardcoded config** — enables the template/fork model. Every deployment is independent.
-- **Single spreadsheet, two tabs** — simplest possible data model. No database to provision or manage.
+- **Supabase over Apps Script + Google Sheets** — eliminates Google OAuth scope exposure, enables proper HMAC-SHA256 verification, single platform, modern TypeScript/Deno runtime. See [ADR 2026-03-26](decisions/2026-03-26-switch-to-supabase.md).
+- **Edge Functions over a standalone server** — serverless, no infrastructure to maintain, deploys from the repo.
+- **Block Kit over plain text** — better UX, structured formatting, modals for input.
+- **Environment variables over hardcoded config** — enables the template/fork model. Every deployment is independent.
+- **SQL migrations in the repo** — schema and RLS policies are version-controlled, reproducible, and reviewable.

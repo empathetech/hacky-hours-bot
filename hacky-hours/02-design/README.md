@@ -6,7 +6,8 @@ This project uses the following design documents:
 
 | Document | Status |
 |----------|--------|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | ✅ Complete |
-| [DATA_MODEL.md](DATA_MODEL.md) | ✅ Complete |
-| [SECURITY_PRIVACY.md](SECURITY_PRIVACY.md) | ✅ Complete |
-| [LICENSING.md](LICENSING.md) | ✅ Complete |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | ✅ Updated for Supabase |
+| [DATA_MODEL.md](DATA_MODEL.md) | ✅ Updated for Supabase |
+| [SECURITY_PRIVACY.md](SECURITY_PRIVACY.md) | ✅ Updated for Supabase |
+| [LICENSING.md](LICENSING.md) | ✅ Updated for Supabase |
+| [decisions/](decisions/) | ADRs — architecture decision records |

@@ -26,8 +26,8 @@ The bot is a **template** — fork it, configure your environment variables for 
 ## Where — Platform and Delivery
 
 - **Interface:** Slack slash commands and modals
-- **Runtime:** Google Apps Script (deployed as a web app)
-- **Storage:** Google Sheets spreadsheet with two tabs: "Open Ideas" and "Closed Ideas"
+- **Runtime:** Supabase Edge Functions (serverless Deno/TypeScript)
+- **Storage:** Supabase Postgres with two tables: `open_ideas` and `closed_ideas`
 - **No standalone UI** — everything happens inside Slack
 
 ## When — Timeline and Priority
@@ -56,7 +56,7 @@ No emails, no auth tokens, no personal data stored beyond what Slack provides in
 
 ### Infrastructure Preference
 
-Fully serverless via Google Apps Script. Zero maintenance — Google manages hosting. Each deployment connects to its own Slack workspace and Google Sheet via Script Properties (Apps Script's equivalent of environment variables).
+Fully serverless via Supabase Edge Functions + Postgres. Zero maintenance — Supabase manages hosting. Each deployment connects to its own Slack workspace and Supabase project via environment variables. No Google account required.
 
 ### Accessibility Commitment
 

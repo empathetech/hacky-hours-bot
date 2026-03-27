@@ -2,19 +2,21 @@
 
 **Level 2 — Design** | hacky-hours-bot
 
+> **Note:** Updated for Supabase architecture. See [ADR 2026-03-26](decisions/2026-03-26-switch-to-supabase.md).
+
 ---
 
 ## Data Inventory
 
 | Data | Source | Stored where | Purpose |
 |------|--------|-------------|---------|
-| Slack user ID | Slack command payload (`user_id`) | Google Sheet | Identifies who submitted or picked an idea |
-| Idea name | User input (modal) | Google Sheet | Lookup key for `get` and `pick` |
-| Idea description | User input (modal) | Google Sheet | What the idea is about |
-| Idea features | User input (modal) | Google Sheet | Desired scope / features |
-| Submitted timestamp | Auto-generated | Google Sheet | When the idea was created |
-| Picked-by user ID | Slack command payload (`user_id`) | Google Sheet | Who claimed the idea |
-| Picked timestamp | Auto-generated | Google Sheet | When the idea was claimed |
+| Slack user ID | Slack command payload (`user_id`) | Supabase Postgres | Identifies who submitted or picked an idea |
+| Idea name | User input (modal) | Supabase Postgres | Lookup key for `get` and `pick` |
+| Idea description | User input (modal) | Supabase Postgres | What the idea is about |
+| Idea features | User input (modal) | Supabase Postgres | Desired scope / features |
+| Submitted timestamp | Auto-generated | Supabase Postgres | When the idea was created |
+| Picked-by user ID | Slack command payload (`user_id`) | Supabase Postgres | Who claimed the idea |
+| Picked timestamp | Auto-generated | Supabase Postgres | When the idea was claimed |
 
 **What we don't store:** emails, passwords, display names, profile photos, auth tokens, or any PII beyond Slack user IDs.
 
@@ -22,40 +24,49 @@
 
 ## Authentication & Authorization
 
-**Authentication:** All requests are verified via Slack Verification Token (static token comparison). HMAC-SHA256 signing secret verification is not possible in Apps Script because `doPost(e)` does not expose HTTP headers. See ARCHITECTURE.md — Request Verification for details and accepted risk analysis.
+**Authentication:** All requests are verified via **Slack Signing Secret (HMAC-SHA256)** — Slack's recommended best practice. The Edge Function has full access to HTTP headers (`X-Slack-Signature`, `X-Slack-Request-Timestamp`), enabling proper signature verification with replay protection (reject requests older than 5 minutes).
 
-**Authorization:** None — any member of the Slack workspace can use all commands. No admin vs. user roles. Anyone can submit, list, get, random, or pick. The `picked_by` field tracks who claimed an idea, but there's no restriction on who can do it.
+This is a security improvement over the previous Apps Script architecture, which could not access HTTP headers and relied on the deprecated verification token.
 
-**V2 note:** The `save` command will require `channels:history` and `groups:history` scopes, granting the bot read access to channel messages. This is a broader permission than the MVP commands need. The runbook should explain this scope expansion clearly when documenting V2 setup.
+**Authorization:** None — any member of the Slack workspace can use all commands. No admin vs. user roles. Anyone can submit, list, get, random, pick, or save. The `picked_by` field tracks who claimed an idea, but there's no restriction on who can do it.
+
+**The `save` command** requires `channels:history` and `groups:history` scopes, granting the bot read access to channel messages. The README should explain this scope expansion clearly.
 
 ---
 
-## Google Sheet Access Model
+## Database Access Model
 
-### MVP — Apps Script Runs as Deployer
+### Defense in Depth
 
-The Apps Script runs under the deployer's Google account. The deployer owns both the script and the Sheet. No service account or extra credentials needed.
+Access to the database is secured at three levels:
 
-**Sheet sharing:**
-- The Sheet should be **restricted by default** — no sharing link, no additional collaborators.
-- The Slack bot is the only writer. All reads and writes go through the bot.
-- **Viewing the Sheet directly is an independent decision.** The deployer can share view-only access with specific people or via link for transparency/auditing purposes. The bot doesn't depend on or enforce this.
+**Level 1 — Network:** The Supabase project URL is not public-facing. It appears only in Edge Function environment variables (set via the Supabase dashboard). It is never exposed in Slack responses, client-side code, or the git repo.
 
-**Risk:** The deployer's Google account is the single point of trust. If their account is compromised, the Sheet and script are exposed. Acceptable for a community tool; the data sensitivity is low (idea names and Slack user IDs).
+**Level 2 — API Keys:** Supabase provides two keys per project:
 
-### V2 — Service Account Option
+| Key | Access level | Where it's used |
+|-----|-------------|----------------|
+| `anon` key | Subject to Row Level Security (RLS) policies | **Not used.** We have no client-side access. |
+| `service_role` key | Bypasses RLS — full database access | Edge Functions only. Never leaves Supabase's infrastructure. |
 
-A future version should offer a **service account pathway** as an alternative:
-- Create a Google Cloud service account
-- Share the Sheet with the service account email (editor access)
-- Use the service account credentials in Apps Script
+**Level 3 — Row Level Security (RLS):** Enabled on both tables with **no policies** — meaning the `anon` key has zero access (default deny). Even if someone obtains the project URL and `anon` key, they cannot read or write any data.
 
-**Tradeoffs vs. deployer account:**
-- **Tighter isolation** — the service account only accesses what you explicitly share with it, separate from any personal Google account
-- **More setup** — requires a Google Cloud project, credentials JSON, OAuth configuration
-- **Better for teams** — the bot isn't tied to one person's account
+The `service_role` key bypasses RLS by design. This is Supabase's intended pattern for server-side access from trusted code (Edge Functions).
 
-V2 should document both pathways with runbooks and a clear comparison of risk levels so deployers can choose.
+### Verification Step
+
+After deploying, verify RLS is working by running this in the Supabase SQL Editor:
+
+```sql
+-- This should return zero rows (RLS blocks anon access)
+SET role anon;
+SELECT * FROM open_ideas;
+
+-- Reset role
+RESET role;
+```
+
+If it returns data, RLS is not configured correctly — rerun the migration.
 
 ---
 
@@ -63,33 +74,48 @@ V2 should document both pathways with runbooks and a clear comparison of risk le
 
 | Threat | Mitigation |
 |--------|-----------|
-| Unauthenticated requests to the Apps Script URL | Verification token rejects requests without a valid token |
+| Unauthenticated requests to the Edge Function URL | HMAC-SHA256 signing secret verification rejects unsigned requests |
 | Slack user ID spoofing | Not possible — `user_id` comes from Slack's verified payload, not user input |
-| Replay attacks | Not mitigated — verification tokens have no replay protection. Accepted risk given low data sensitivity. |
-| Sheet data exposure | Sheet restricted by default; sharing is an independent deployer decision |
-| Deployer account compromise | Low-sensitivity data (idea names, Slack user IDs). V2 service account option reduces this risk. |
-| Apps Script URL leaked | Without the signing secret, requests are rejected. URL alone is not sufficient to read or write data. |
+| Replay attacks | Timestamp check — reject requests older than 5 minutes |
+| Database exposure via `anon` key | RLS enabled with no policies = zero access for `anon` |
+| `service_role` key leaked | Key exists only in Supabase's Edge Function environment — never in code, never in git, never in HTTP responses |
+| Supabase project URL leaked | Without the `service_role` key, only the `anon` key can be used, which has zero access due to RLS |
+| Edge Function URL leaked | Without the Slack signing secret, requests are rejected |
 
 ---
 
 ## Input Validation
 
-All user input comes through Slack modals, which provide basic constraints (required fields, character limits). Apps Script should additionally:
+All user input comes through Slack modals, which provide basic constraints (required fields, character limits). The Edge Function should additionally:
 
 - **Sanitize idea names** before using them as lookup keys (trim whitespace, reject empty strings after trim)
-- **Enforce the duplicate name check** on submit (see DATA_MODEL.md — Constraints)
-- **Do not log or echo raw user input in error messages** — return generic errors to Slack, log details to Apps Script's execution log (which is only visible to the deployer)
+- **Enforce the duplicate name check** on submit — the `UNIQUE` constraint on `open_ideas.name` handles this at the database level; the Edge Function translates the constraint violation into a modal validation error
+- **Parameterize all SQL queries** — use the Supabase client library (which parameterizes automatically) instead of string concatenation. Never construct SQL strings from user input.
+- **Do not echo raw user input in error messages** — return generic errors to Slack, log details to Edge Function logs (visible only in the Supabase dashboard)
 
 ---
 
 ## Secrets Management
 
-All secrets live in **Google Apps Script Script Properties** (encrypted at rest, not visible in source code):
+All secrets live in **Supabase Edge Function environment variables** (set via dashboard or CLI). They never appear in source code.
 
-| Secret | Purpose |
-|--------|---------|
-| `SLACK_VERIFICATION_TOKEN` | Request verification |
-| `SLACK_BOT_TOKEN` | Calling Slack API (modals, messages) |
-| `SPREADSHEET_ID` | Target Google Sheet |
+| Secret | Purpose | Set via |
+|--------|---------|---------|
+| `SLACK_SIGNING_SECRET` | HMAC-SHA256 request verification | `supabase secrets set SLACK_SIGNING_SECRET=...` |
+| `SLACK_BOT_TOKEN` | Calling Slack API (modals, messages) | `supabase secrets set SLACK_BOT_TOKEN=...` |
 
-**Never commit these to the repo.** The README runbook must make this clear. The `.gitignore` should not need to cover these since they live in Script Properties, not in files — but the runbook should explicitly warn against pasting them into source files.
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are automatically available in Edge Functions — no manual configuration needed.
+
+**Never commit secrets to the repo.** The `.gitignore` should cover `.env` and `.env.*` files used for local development.
+
+---
+
+## Improvement over Previous Architecture
+
+| Concern | Apps Script (v0.1–v0.2) | Supabase (v0.3+) |
+|---------|------------------------|-------------------|
+| Request verification | Deprecated verification token (no replay protection) | HMAC-SHA256 signing secret (gold standard) |
+| Google account exposure | `spreadsheets` scope = access to all deployer's sheets | No Google account involved |
+| Database access control | Google Sheet sharing settings (binary: shared or not) | RLS policies + separate API keys |
+| Secrets storage | Script Properties (Google-managed) | Edge Function env vars (Supabase-managed) |
+| Data isolation | Deployer's Google Drive | Isolated Supabase project |

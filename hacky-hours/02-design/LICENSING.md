@@ -18,13 +18,16 @@ The `LICENSE` file in the repo root must reflect this.
 
 ## Dependencies
 
-None. Google Apps Script has no package manager — there are no third-party libraries to evaluate for license compatibility.
+**Runtime:** [Supabase Edge Functions](https://supabase.com/edge-functions) (Deno/TypeScript)
+
+**Libraries:**
+- `@supabase/supabase-js` — Supabase client library (MIT license) — compatible
 
 **External services accessed via HTTP:**
 - **Slack API** — used under Slack's API Terms of Service
-- **Google Sheets API** — accessed through Apps Script's built-in `SpreadsheetApp` (no separate library)
+- **Supabase** — open source (Apache 2.0); compatible with MIT. Hosted service used under [Supabase Terms](https://supabase.com/terms).
 
-Neither introduces a licensing concern for the project itself.
+No licensing conflicts.
 
 ---
 
