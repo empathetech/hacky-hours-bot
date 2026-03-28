@@ -26,3 +26,4 @@ CREATE TABLE vote_ideas (
 -- No policies = default deny for the anon key.
 ALTER TABLE votes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vote_ideas ENABLE ROW LEVEL SECURITY;
+
