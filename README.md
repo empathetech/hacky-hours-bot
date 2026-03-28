@@ -14,7 +14,7 @@ This is a **template repo** — fork it, configure your own Slack workspace and 
 | `/hacky-hours get [name]` | View details for a specific idea |
 | `/hacky-hours random` | Get a random idea from the open pool |
 | `/hacky-hours pick [name]` | Claim an idea for your session |
-| `/hacky-hours save` | Save a thread as an idea (run from inside a thread) |
+| `/hacky-hours save [thread-link]` | Save a thread as an idea |
 
 ## Architecture
 
@@ -138,7 +138,7 @@ https://YOUR_PROJECT_REF.supabase.co/functions/v1/hacky-hours
    - **Command:** `/hacky-hours`
    - **Request URL:** The Edge Function URL from Step 7
    - **Short Description:** "Submit, browse, and claim Hacky Hours ideas"
-   - **Usage Hint:** "help | submit | list | get [name] | random | pick [name] | save"
+   - **Usage Hint:** "help | submit | list | get [name] | random | pick [name] | save [thread-link]"
 4. Click **Save**
 
 **Set up Interactivity (for modals):**
@@ -272,7 +272,7 @@ See [SECURITY_PRIVACY.md](hacky-hours/02-design/SECURITY_PRIVACY.md) for the ful
 **Database errors:** Run `supabase db push` to ensure migrations are applied. Check the Supabase dashboard → Table Editor to see if the tables exist.
 
 **`/hacky-hours save` not working:** Check that:
-- You're running the command from **inside a thread** (not a top-level message)
+- You're passing a thread link: right-click a message in the thread → *Copy link*, then `/hacky-hours save <link>`
 - The bot has `channels:history` scope (and `groups:history` for private channels)
 - The bot has been added to the channel (for private channels: invite the bot first)
 

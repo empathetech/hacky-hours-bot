@@ -10,7 +10,6 @@ interface SlashPayload {
   user_id: string;
   trigger_id: string;
   channel_id: string;
-  thread_ts?: string;
 }
 
 interface InteractionPayload {
@@ -123,7 +122,6 @@ function parsePayload(params: URLSearchParams, body: string): Payload {
     user_id: params.get("user_id") ?? "",
     trigger_id: params.get("trigger_id") ?? "",
     channel_id: params.get("channel_id") ?? "",
-    thread_ts: params.get("thread_ts") ?? undefined,
   };
 }
 
@@ -181,7 +179,7 @@ function handleHelp(): Response {
             "`/hacky-hours get [name]` — View details for a specific idea\n" +
             "`/hacky-hours random` — Get a random idea\n" +
             "`/hacky-hours pick [name]` — Claim an idea for your session\n" +
-            "`/hacky-hours save` — Save a thread as an idea (run from inside a thread)",
+            "`/hacky-hours save [thread-link]` — Save a thread as an idea",
         },
       },
     ],
@@ -380,16 +378,19 @@ async function handlePick(payload: SlashPayload): Promise<Response> {
 }
 
 async function handleSave(payload: SlashPayload): Promise<Response> {
-  if (!payload.thread_ts) {
+  // Slack slash commands don't include thread_ts, so we parse a thread URL
+  const parsed = parseSlackThreadUrl(payload.args);
+  if (!parsed) {
     return jsonResponse({
-      text: "This command must be run from inside a thread. " +
-        "Open the thread you want to save, then type `/hacky-hours save` there.",
+      text: "Please provide a thread link. " +
+        "Right-click a message in the thread → *Copy link*, then:\n" +
+        "`/hacky-hours save <thread-link>`",
     });
   }
 
   const messages = await getThreadMessages(
-    payload.channel_id,
-    payload.thread_ts,
+    parsed.channelId,
+    parsed.threadTs,
   );
   if (!messages || messages.length === 0) {
     return jsonResponse({
@@ -501,6 +502,26 @@ async function getThreadMessages(
     return null;
   }
   return result.messages ?? [];
+}
+
+// ─── Slack URL Parsing ─────────────────────────────────────────────────────
+
+function parseSlackThreadUrl(
+  url: string,
+): { channelId: string; threadTs: string } | null {
+  if (!url) return null;
+
+  // Slack thread URLs look like:
+  //   https://workspace.slack.com/archives/C12345/p1234567890123456
+  // The "p" timestamp is the ts without the dot, zero-padded to 16 digits
+  const match = url.match(
+    /\/archives\/([A-Z0-9]+)\/p(\d{10})(\d{6})/i,
+  );
+  if (!match) return null;
+
+  const channelId = match[1];
+  const threadTs = `${match[2]}.${match[3]}`;
+  return { channelId, threadTs };
 }
 
 // ─── Block Kit Formatting ───────────────────────────────────────────────────

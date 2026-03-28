@@ -7,6 +7,19 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.1] — 2026-03-28
+
+### Fixed
+
+- `/hacky-hours save` now accepts a thread link argument instead of relying on `thread_ts` from the slash command payload, which Slack never provides. The previous implementation was broken — the command always returned an error because Slack slash commands don't include thread context.
+
+### Changed
+
+- Save command usage: `/hacky-hours save [thread-link]` (right-click a message → *Copy link*)
+- Updated help text, README, and ARCHITECTURE.md to reflect the new usage
+
+---
+
 ## [0.3.0] — 2026-03-26
 
 ### Changed — Architecture rewrite (Apps Script → Supabase)

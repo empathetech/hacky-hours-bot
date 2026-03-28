@@ -123,19 +123,23 @@ The `trigger_id` is ephemeral (valid for ~3 seconds) — the `views.open` call m
 
 ## Thread Save Command
 
-`/hacky-hours save` — formats a Slack thread as markdown and pre-fills the submit modal.
+`/hacky-hours save [thread-link]` — formats a Slack thread as markdown and pre-fills the submit modal.
 
 **Flow:**
-1. User runs `/hacky-hours save` in or referencing a thread
-2. Edge Function calls `conversations.replies` to read the thread
-3. Formats messages as markdown (username, timestamp, message text)
-4. Opens the `submit` modal with the formatted thread pre-filled in `description`; `name` and `features` left blank for the user
-5. User edits and submits as normal — reuses existing submit flow
+1. User right-clicks a message in a thread → *Copy link*
+2. User runs `/hacky-hours save <thread-link>`
+3. Edge Function parses `channel_id` and `thread_ts` from the Slack URL
+4. Calls `conversations.replies` to read the thread
+5. Formats messages as markdown (username, timestamp, message text)
+6. Opens the `submit` modal with the formatted thread pre-filled in `description`; `name` and `features` left blank for the user
+7. User edits and submits as normal — reuses existing submit flow
+
+**Why a thread link?** Slack slash commands do not include `thread_ts` in their payload, even when invoked from inside a thread. The URL is the only reliable way to pass thread context.
 
 **Additional requirements:**
 - Bot token scopes: `channels:history` (public), `groups:history` (private channels)
 - One Slack API call: `conversations.replies`
-- Thread context: `channel_id` and `thread_ts` from the slash command payload
+- Thread URL format: `https://<workspace>.slack.com/archives/<channel_id>/p<timestamp>`
 
 ---
 
