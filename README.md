@@ -15,6 +15,8 @@ This is a **template repo** — fork it, configure your own Slack workspace and 
 | `/hacky-hours random` | Get a random idea from the open pool |
 | `/hacky-hours pick [name]` | Claim an idea for your session |
 | `/hacky-hours save [thread-link]` | Save a thread as an idea |
+| `/hacky-hours vote` | Start a vote on one or more ideas (opens a modal) |
+| `/hacky-hours close-vote [name]` | Close a vote and pick the winner |
 
 ## Architecture
 
@@ -102,6 +104,8 @@ This should return **zero rows** even if there's data — confirming the `anon` 
    - `chat:write`
    - `channels:history` (required for `/hacky-hours save` in public channels)
    - `groups:history` (required for `/hacky-hours save` in private channels)
+   - `reactions:read` (required for vote tallying)
+   - `reactions:write` (required for seeding vote emoji prompts)
 3. Scroll to the top and click **Install to Workspace**, then **Allow**
 4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
 
@@ -138,7 +142,7 @@ https://YOUR_PROJECT_REF.supabase.co/functions/v1/hacky-hours
    - **Command:** `/hacky-hours`
    - **Request URL:** The Edge Function URL from Step 7
    - **Short Description:** "Submit, browse, and claim Hacky Hours ideas"
-   - **Usage Hint:** "help | submit | list | get [name] | random | pick [name] | save [thread-link]"
+   - **Usage Hint:** "help | submit | list | get [name] | random | pick [name] | save [link] | vote | close-vote [name]"
 4. Click **Save**
 
 **Set up Interactivity (for modals):**
@@ -146,6 +150,16 @@ https://YOUR_PROJECT_REF.supabase.co/functions/v1/hacky-hours
 2. Toggle **Interactivity** to **On**
 3. Set **Request URL** to the same Edge Function URL from Step 7
 4. Click **Save Changes**
+
+**Set up Event Subscriptions (for vote reactions):**
+1. In the left sidebar, click **Event Subscriptions**
+2. Toggle **Enable Events** to **On**
+3. Set **Request URL** to the same Edge Function URL — Slack will send a verification challenge; the bot handles this automatically
+4. Under **Subscribe to bot events**, add:
+   - `reaction_added`
+   - `reaction_removed`
+5. Click **Save Changes**
+6. **Reinstall the app** — go to OAuth & Permissions → Reinstall to Workspace (required after adding events)
 
 ### Step 9: Test
 

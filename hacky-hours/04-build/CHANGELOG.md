@@ -7,6 +7,38 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.0] — 2026-03-28
+
+### Added — Vote System
+
+Community-driven idea selection via emoji reaction voting.
+
+See [ADR 2026-03-28: Vote System](../02-design/decisions/2026-03-28-vote-system.md) for the full decision record.
+
+- `/hacky-hours vote` — opens a modal to create a named vote session with multi-select idea picker and optional duration
+- `/hacky-hours close-vote [name]` — tallies emoji reactions and selects the winner
+- Slack Events API integration for real-time reaction tracking (`reaction_added`, `reaction_removed`)
+- `url_verification` challenge handler for Slack Event Subscriptions setup
+- SQL migration: `votes` and `vote_ideas` tables with RLS (default deny for anon)
+- Vote message posted to channel with numbered emoji prompts (bot seeds reactions)
+- Caller exclusion — vote creator cannot vote (prevents self-selection bias)
+- Tie resolution — bot randomly selects among tied ideas
+- Configurable max concurrent votes via `MAX_OPEN_VOTES` env var (default 5)
+- Duration support — optional auto-close (e.g., `5m`, `1h`, `30s`); lazy cleanup on next interaction
+- Winning idea automatically goes through the `pick` flow (moved to `closed_ideas`)
+
+### Changed
+
+- Help text updated with `vote` and `close-vote` commands
+- README updated with new scopes (`reactions:read`, `reactions:write`), Event Subscriptions setup guide
+- Updated usage hint in Slack app configuration
+
+### Fixed
+
+- GitHub Actions deploy workflow now passes `SUPABASE_DB_PASSWORD` to `supabase db push`
+
+---
+
 ## [0.3.1] — 2026-03-28
 
 ### Fixed

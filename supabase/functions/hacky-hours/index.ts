@@ -17,13 +17,32 @@ interface InteractionPayload {
   callback_id: string;
   user_id: string;
   view: {
+    private_metadata?: string;
     state: {
-      values: Record<string, Record<string, { value: string | null }>>;
+      values: Record<string, Record<string, {
+        value?: string | null;
+        selected_options?: Array<{ value: string }>;
+      }>>;
     };
   };
 }
 
-type Payload = SlashPayload | InteractionPayload;
+interface EventPayload {
+  type: "event_callback" | "url_verification";
+  challenge?: string;
+  event?: {
+    type: string;
+    user: string;
+    reaction: string;
+    item: {
+      type: string;
+      channel: string;
+      ts: string;
+    };
+  };
+}
+
+type Payload = SlashPayload | InteractionPayload | EventPayload;
 
 interface Idea {
   id: string;
@@ -32,6 +51,18 @@ interface Idea {
   description: string;
   features: string;
   submitted_at: string;
+}
+
+interface Vote {
+  id: string;
+  name: string;
+  caller_id: string;
+  channel_id: string;
+  message_ts: string;
+  emoji: string;
+  max_winners: number;
+  expires_at: string | null;
+  created_at: string;
 }
 
 // ─── Supabase Client ────────────────────────────────────────────────────────
@@ -99,6 +130,14 @@ function timingSafeEqual(a: string, b: string): boolean {
 // ─── Request Parsing ────────────────────────────────────────────────────────
 
 function parsePayload(params: URLSearchParams, body: string): Payload {
+  // Try parsing as JSON first (Events API sends JSON)
+  if (body.startsWith("{")) {
+    const json = JSON.parse(body);
+    if (json.type === "url_verification" || json.type === "event_callback") {
+      return json as EventPayload;
+    }
+  }
+
   // Interaction payloads (modals) come as a JSON string in a 'payload' parameter
   const payloadStr = params.get("payload");
   if (payloadStr) {
@@ -143,6 +182,10 @@ async function routeCommand(payload: SlashPayload): Promise<Response> {
       return handlePick(payload);
     case "save":
       return handleSave(payload);
+    case "vote":
+      return handleVote(payload);
+    case "close-vote":
+      return handleCloseVote(payload);
     default:
       return jsonResponse({
         text: `Unknown command: \`${payload.command}\`. Try \`/hacky-hours help\` for a list of commands.`,
@@ -179,7 +222,9 @@ function handleHelp(): Response {
             "`/hacky-hours get [name]` — View details for a specific idea\n" +
             "`/hacky-hours random` — Get a random idea\n" +
             "`/hacky-hours pick [name]` — Claim an idea for your session\n" +
-            "`/hacky-hours save [thread-link]` — Save a thread as an idea",
+            "`/hacky-hours save [thread-link]` — Save a thread as an idea\n" +
+            "`/hacky-hours vote` — Start a vote on one or more ideas\n" +
+            "`/hacky-hours close-vote [name]` — Close a vote and pick the winner",
         },
       },
     ],
@@ -388,18 +433,26 @@ async function handleSave(payload: SlashPayload): Promise<Response> {
     });
   }
 
-  const messages = await getThreadMessages(
+  const result = await getThreadMessages(
     parsed.channelId,
     parsed.threadTs,
   );
-  if (!messages || messages.length === 0) {
+  if (!result.ok) {
+    const hint = result.error === "not_in_channel"
+      ? "The bot isn't in this channel. Invite it first: `/invite @your-bot`"
+      : result.error === "channel_not_found"
+        ? "Channel not found. The bot may not have access to this channel."
+        : `Slack API error: \`${result.error}\`. Check bot scopes and channel membership.`;
+    return jsonResponse({ text: hint });
+  }
+  if (result.messages.length === 0) {
     return jsonResponse({
-      text: "Could not read the thread. Make sure the bot has `channels:history` " +
-        "(and `groups:history` for private channels) permissions.",
+      text: "Thread appears to be empty. Double-check that the link points to a thread, " +
+        "not a standalone message.",
     });
   }
 
-  let markdown = formatThreadAsMarkdown(messages);
+  let markdown = formatThreadAsMarkdown(result.messages);
 
   // Slack modal text inputs have a 3000 char limit
   if (markdown.length > 3000) {
@@ -410,9 +463,476 @@ async function handleSave(payload: SlashPayload): Promise<Response> {
   return new Response("", { status: 200 });
 }
 
+async function handleVote(payload: SlashPayload): Promise<Response> {
+  const supabase = getSupabaseClient();
+
+  // Check max concurrent votes
+  const maxVotes = parseInt(Deno.env.get("MAX_OPEN_VOTES") ?? "5");
+  const { count } = await supabase
+    .from("votes")
+    .select("*", { count: "exact", head: true });
+
+  if ((count ?? 0) >= maxVotes) {
+    return jsonResponse({
+      text: `There are already ${count} active votes (max ${maxVotes}). Close one first with \`/hacky-hours close-vote [name]\`.`,
+    });
+  }
+
+  // Fetch open ideas for the modal selector
+  const { data: ideas } = await supabase
+    .from("open_ideas")
+    .select("id, name")
+    .order("submitted_at");
+
+  if (!ideas || ideas.length === 0) {
+    return jsonResponse({
+      text: "No open ideas to vote on. Submit one first with `/hacky-hours submit`.",
+    });
+  }
+
+  const options = ideas.map((idea: { id: string; name: string }) => ({
+    text: { type: "plain_text" as const, text: idea.name.substring(0, 75) },
+    value: idea.id,
+  }));
+
+  await openModal(payload.trigger_id, {
+    type: "modal",
+    callback_id: "create_vote",
+    title: { type: "plain_text", text: "Start a Vote" },
+    submit: { type: "plain_text", text: "Start Vote" },
+    close: { type: "plain_text", text: "Cancel" },
+    private_metadata: JSON.stringify({
+      channel_id: payload.channel_id,
+      caller_id: payload.user_id,
+    }),
+    blocks: [
+      {
+        type: "input",
+        block_id: "vote_name_block",
+        label: { type: "plain_text", text: "Vote Name" },
+        element: {
+          type: "plain_text_input",
+          action_id: "vote_name_input",
+          placeholder: { type: "plain_text", text: "A short name for this vote" },
+        },
+      },
+      {
+        type: "input",
+        block_id: "ideas_block",
+        label: { type: "plain_text", text: "Ideas to Vote On" },
+        element: {
+          type: "multi_static_select",
+          action_id: "ideas_select",
+          placeholder: { type: "plain_text", text: "Select ideas..." },
+          options,
+        },
+      },
+      {
+        type: "input",
+        block_id: "duration_block",
+        label: { type: "plain_text", text: "Duration (optional)" },
+        optional: true,
+        element: {
+          type: "plain_text_input",
+          action_id: "duration_input",
+          placeholder: { type: "plain_text", text: "e.g. 5m, 1h, 30s — leave blank for manual close" },
+        },
+      },
+    ],
+  });
+
+  return new Response("", { status: 200 });
+}
+
+async function handleCloseVote(payload: SlashPayload): Promise<Response> {
+  if (!payload.args) {
+    return jsonResponse({
+      text: "Please provide the vote name. Usage: `/hacky-hours close-vote [name]`",
+    });
+  }
+
+  const supabase = getSupabaseClient();
+
+  // Find the vote
+  const { data: vote } = await supabase
+    .from("votes")
+    .select("*")
+    .ilike("name", payload.args)
+    .limit(1)
+    .single();
+
+  if (!vote) {
+    return jsonResponse({
+      text: `No active vote found with the name "${payload.args}".`,
+    });
+  }
+
+  // Only the caller can close (unless expired)
+  const isExpired = vote.expires_at && new Date(vote.expires_at) <= new Date();
+  if (vote.caller_id !== payload.user_id && !isExpired) {
+    return jsonResponse({
+      text: `Only the vote creator (<@${vote.caller_id}>) can close this vote.`,
+    });
+  }
+
+  return await tallyAndCloseVote(vote, payload.channel_id);
+}
+
+async function tallyAndCloseVote(vote: Vote, responseChannelId: string): Promise<Response> {
+  const supabase = getSupabaseClient();
+  const token = Deno.env.get("SLACK_BOT_TOKEN")!;
+
+  // Get the ideas in this vote
+  const { data: voteIdeas } = await supabase
+    .from("vote_ideas")
+    .select("idea_id")
+    .eq("vote_id", vote.id);
+
+  if (!voteIdeas || voteIdeas.length === 0) {
+    await supabase.from("votes").delete().eq("id", vote.id);
+    return jsonResponse({ text: "Vote had no ideas. Cleaned up." });
+  }
+
+  // Get reactions on the vote message
+  const reactionsUrl = `https://slack.com/api/reactions.get?channel=${encodeURIComponent(vote.channel_id)}&timestamp=${encodeURIComponent(vote.message_ts)}`;
+  const reactionsRes = await fetch(reactionsUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const reactionsData = await reactionsRes.json();
+
+  // Build a map of idea_index -> unique voter user IDs
+  // The vote message uses numbered emoji reactions: one, two, three, etc.
+  const numberEmojis = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "keycap_ten"];
+  const ideaVotes: Map<number, Set<string>> = new Map();
+
+  if (reactionsData.ok && reactionsData.message?.reactions) {
+    for (const reaction of reactionsData.message.reactions) {
+      const emojiIndex = numberEmojis.indexOf(reaction.name);
+      if (emojiIndex === -1 || emojiIndex >= voteIdeas.length) continue;
+
+      const voters = new Set<string>();
+      for (const userId of reaction.users ?? []) {
+        // Exclude the caller and the bot
+        if (userId === vote.caller_id) continue;
+        voters.add(userId);
+      }
+      ideaVotes.set(emojiIndex, voters);
+    }
+  }
+
+  // Fetch the actual idea records
+  const ideaIds = voteIdeas.map((vi: { idea_id: string }) => vi.idea_id);
+  const { data: ideas } = await supabase
+    .from("open_ideas")
+    .select("*")
+    .in("id", ideaIds);
+
+  if (!ideas || ideas.length === 0) {
+    await supabase.from("votes").delete().eq("id", vote.id);
+    return jsonResponse({ text: "The ideas in this vote are no longer available." });
+  }
+
+  // Tally results
+  const results: Array<{ idea: Idea; voteCount: number }> = ideas.map(
+    (idea: Idea, index: number) => ({
+      idea,
+      voteCount: ideaVotes.get(index)?.size ?? 0,
+    }),
+  );
+  results.sort((a, b) => b.voteCount - a.voteCount);
+
+  const topCount = results[0].voteCount;
+  const winners = results.filter((r) => r.voteCount === topCount);
+
+  let winnerIdea: Idea;
+
+  if (topCount === 0) {
+    // No votes — bot picks randomly
+    winnerIdea = results[Math.floor(Math.random() * results.length)].idea;
+    // Post results and pick
+    await postMessage(vote.channel_id, {
+      text: `Vote *${vote.name}* closed — no reactions received. Bot randomly selected *${winnerIdea.name}*.`,
+    });
+  } else if (winners.length === 1) {
+    winnerIdea = winners[0].idea;
+    const resultsText = results
+      .map((r) => `${r.idea.name}: ${r.voteCount} vote${r.voteCount === 1 ? "" : "s"}`)
+      .join("\n");
+    await postMessage(vote.channel_id, {
+      blocks: [
+        {
+          type: "header",
+          text: { type: "plain_text", text: `Vote "${vote.name}" — Results` },
+        },
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: resultsText },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `:trophy: *Winner: ${winnerIdea.name}* with ${topCount} vote${topCount === 1 ? "" : "s"}!`,
+          },
+        },
+      ],
+    });
+  } else {
+    // Tie — bot decides (random among tied)
+    winnerIdea = winners[Math.floor(Math.random() * winners.length)].idea;
+    const tiedNames = winners.map((w) => w.idea.name).join(", ");
+    const resultsText = results
+      .map((r) => `${r.idea.name}: ${r.voteCount} vote${r.voteCount === 1 ? "" : "s"}`)
+      .join("\n");
+    await postMessage(vote.channel_id, {
+      blocks: [
+        {
+          type: "header",
+          text: { type: "plain_text", text: `Vote "${vote.name}" — Results` },
+        },
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: resultsText },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `:scales: Tie between: ${tiedNames} (${topCount} vote${topCount === 1 ? "" : "s"} each)\n:game_die: Bot broke the tie — *${winnerIdea.name}* wins!`,
+          },
+        },
+      ],
+    });
+  }
+
+  // Pick the winning idea (move to closed_ideas)
+  await supabase.from("closed_ideas").insert({
+    name: winnerIdea.name,
+    submitter_id: winnerIdea.submitter_id,
+    description: winnerIdea.description,
+    features: winnerIdea.features,
+    submitted_at: winnerIdea.submitted_at,
+    picked_by: vote.caller_id,
+  });
+  await supabase.from("open_ideas").delete().eq("id", winnerIdea.id);
+
+  // Clean up the vote
+  await supabase.from("votes").delete().eq("id", vote.id);
+
+  return jsonResponse({
+    text: `Vote *${vote.name}* closed. *${winnerIdea.name}* has been picked!`,
+  });
+}
+
+async function handleCreateVoteSubmission(
+  payload: InteractionPayload,
+): Promise<Response> {
+  const values = payload.view.state.values;
+  const voteName = values.vote_name_block.vote_name_input.value?.trim() ?? "";
+  const selectedIdeas = values.ideas_block.ideas_select.selected_options ?? [];
+  const durationStr = values.duration_block.duration_input.value?.trim() ?? "";
+
+  if (!voteName) {
+    return jsonResponse({
+      response_action: "errors",
+      errors: { vote_name_block: "Vote name cannot be empty." },
+    });
+  }
+
+  if (selectedIdeas.length === 0) {
+    return jsonResponse({
+      response_action: "errors",
+      errors: { ideas_block: "Select at least one idea." },
+    });
+  }
+
+  // Parse private_metadata for channel_id and caller_id
+  const metadata = JSON.parse(payload.view.private_metadata ?? "{}");
+  const channelId = metadata.channel_id;
+  const callerId = metadata.caller_id ?? payload.user_id;
+
+  if (!channelId) {
+    return jsonResponse({
+      response_action: "errors",
+      errors: { vote_name_block: "Could not determine channel. Try again." },
+    });
+  }
+
+  // Parse duration
+  let expiresAt: string | null = null;
+  if (durationStr) {
+    const seconds = parseDuration(durationStr);
+    if (seconds === null) {
+      return jsonResponse({
+        response_action: "errors",
+        errors: { duration_block: "Invalid duration. Use formats like: 5m, 1h, 30s" },
+      });
+    }
+    expiresAt = new Date(Date.now() + seconds * 1000).toISOString();
+  }
+
+  const supabase = getSupabaseClient();
+
+  // Fetch the selected idea names for the vote message
+  const ideaIds = selectedIdeas.map((o) => o.value);
+  const { data: ideas } = await supabase
+    .from("open_ideas")
+    .select("id, name, description")
+    .in("id", ideaIds);
+
+  if (!ideas || ideas.length === 0) {
+    return jsonResponse({
+      response_action: "errors",
+      errors: { ideas_block: "Selected ideas no longer exist." },
+    });
+  }
+
+  // Post the vote message to the channel
+  const numberEmojis = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "keycap_ten"];
+  const ideaList = ideas
+    .map((idea: { name: string; description: string }, i: number) => {
+      const desc = idea.description.length > 80
+        ? idea.description.substring(0, 77) + "..."
+        : idea.description;
+      return `:${numberEmojis[i]}: *${idea.name}*\n${desc}`;
+    })
+    .join("\n\n");
+
+  const durationNote = expiresAt
+    ? `\nThis vote closes automatically at <!date^${Math.floor(new Date(expiresAt).getTime() / 1000)}^{time}|${expiresAt}>.`
+    : "\nThe vote creator will close this manually.";
+
+  const messageResult = await postMessage(channelId, {
+    blocks: [
+      {
+        type: "header",
+        text: { type: "plain_text", text: `Vote: ${voteName}` },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `<@${callerId}> started a vote! React with the number emoji to vote for your pick.\n_Vote caller cannot vote unless there's a tie._`,
+        },
+      },
+      { type: "divider" },
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: ideaList },
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `Close with \`/hacky-hours close-vote ${voteName}\`${durationNote}`,
+          },
+        ],
+      },
+    ],
+  });
+
+  if (!messageResult.ok) {
+    console.error("Failed to post vote message:", messageResult.error);
+    return jsonResponse({
+      response_action: "errors",
+      errors: { vote_name_block: `Could not post to channel: ${messageResult.error}` },
+    });
+  }
+
+  // Insert the vote record
+  const { error: voteError } = await supabase.from("votes").insert({
+    name: voteName,
+    caller_id: callerId,
+    channel_id: channelId,
+    message_ts: messageResult.ts,
+    expires_at: expiresAt,
+  });
+
+  if (voteError?.code === "23505") {
+    return jsonResponse({
+      response_action: "errors",
+      errors: { vote_name_block: "A vote with this name already exists." },
+    });
+  }
+
+  if (voteError) {
+    console.error("Vote insert error:", voteError);
+    return jsonResponse({
+      response_action: "errors",
+      errors: { vote_name_block: "Something went wrong. Please try again." },
+    });
+  }
+
+  // Get the vote ID we just created
+  const { data: newVote } = await supabase
+    .from("votes")
+    .select("id")
+    .eq("name", voteName)
+    .single();
+
+  if (newVote) {
+    // Insert vote_ideas
+    const voteIdeaRows = ideas.map((idea: { id: string }) => ({
+      vote_id: newVote.id,
+      idea_id: idea.id,
+    }));
+    await supabase.from("vote_ideas").insert(voteIdeaRows);
+
+    // Add the number emoji reactions to the message as prompts
+    for (let i = 0; i < ideas.length && i < numberEmojis.length; i++) {
+      await addReaction(channelId, messageResult.ts, numberEmojis[i]);
+    }
+  }
+
+  return jsonResponse({ response_action: "clear" });
+}
+
+async function handleEventCallback(payload: EventPayload): Promise<Response> {
+  const event = payload.event;
+  if (!event) return new Response("", { status: 200 });
+
+  // We only care about reactions on vote messages
+  if (event.type !== "reaction_added" && event.type !== "reaction_removed") {
+    return new Response("", { status: 200 });
+  }
+
+  if (event.item.type !== "message") return new Response("", { status: 200 });
+
+  const supabase = getSupabaseClient();
+
+  // Check if this reaction is on a vote message
+  const { data: vote } = await supabase
+    .from("votes")
+    .select("*")
+    .eq("channel_id", event.item.channel)
+    .eq("message_ts", event.item.ts)
+    .limit(1)
+    .single();
+
+  if (!vote) return new Response("", { status: 200 });
+
+  // Check if vote has expired — if so, auto-close it
+  if (vote.expires_at && new Date(vote.expires_at) <= new Date()) {
+    await tallyAndCloseVote(vote, vote.channel_id);
+    return new Response("", { status: 200 });
+  }
+
+  // If the caller reacted, remove their reaction
+  if (event.type === "reaction_added" && event.user === vote.caller_id) {
+    await removeReaction(event.item.channel, event.item.ts, event.reaction);
+  }
+
+  return new Response("", { status: 200 });
+}
+
 async function handleViewSubmission(
   payload: InteractionPayload,
 ): Promise<Response> {
+  if (payload.callback_id === "create_vote") {
+    return handleCreateVoteSubmission(payload);
+  }
+
   if (payload.callback_id !== "submit_idea") {
     return jsonResponse({ response_action: "clear" });
   }
@@ -487,9 +1007,12 @@ async function openModal(
 async function getThreadMessages(
   channelId: string,
   threadTs: string,
-): Promise<Array<{ user?: string; ts: string; text?: string }> | null> {
+): Promise<
+  | { ok: true; messages: Array<{ user?: string; ts: string; text?: string }> }
+  | { ok: false; error: string }
+> {
   const token = Deno.env.get("SLACK_BOT_TOKEN");
-  if (!token) return null;
+  if (!token) return { ok: false, error: "SLACK_BOT_TOKEN not set" };
 
   const url = `https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channelId)}&ts=${encodeURIComponent(threadTs)}`;
   const res = await fetch(url, {
@@ -499,9 +1022,80 @@ async function getThreadMessages(
   const result = await res.json();
   if (!result.ok) {
     console.error("conversations.replies error:", result.error);
-    return null;
+    return { ok: false, error: result.error };
   }
-  return result.messages ?? [];
+  return { ok: true, messages: result.messages ?? [] };
+}
+
+async function postMessage(
+  channelId: string,
+  message: Record<string, unknown>,
+): Promise<{ ok: boolean; ts: string; error?: string }> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN");
+  if (!token) return { ok: false, ts: "", error: "SLACK_BOT_TOKEN not set" };
+
+  const res = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel: channelId, ...message }),
+  });
+
+  const result = await res.json();
+  return { ok: result.ok, ts: result.ts ?? "", error: result.error };
+}
+
+async function addReaction(
+  channelId: string,
+  timestamp: string,
+  emoji: string,
+): Promise<void> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN");
+  if (!token) return;
+
+  await fetch("https://slack.com/api/reactions.add", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel: channelId, timestamp, name: emoji }),
+  });
+}
+
+async function removeReaction(
+  channelId: string,
+  timestamp: string,
+  emoji: string,
+): Promise<void> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN");
+  if (!token) return;
+
+  await fetch("https://slack.com/api/reactions.remove", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel: channelId, timestamp, name: emoji }),
+  });
+}
+
+// ─── Duration Parsing ──────────────────────────────────────────────────────
+
+function parseDuration(input: string): number | null {
+  const match = input.match(/^(\d+)\s*(s|m|h)$/i);
+  if (!match) return null;
+
+  const value = parseInt(match[1]);
+  switch (match[2].toLowerCase()) {
+    case "s": return value;
+    case "m": return value * 60;
+    case "h": return value * 3600;
+    default: return null;
+  }
 }
 
 // ─── Slack URL Parsing ─────────────────────────────────────────────────────
@@ -735,6 +1329,22 @@ Deno.serve(async (req: Request) => {
 
   const body = await req.text();
 
+  // Handle url_verification before HMAC check — Slack sends this during
+  // initial Event Subscriptions setup and expects the challenge back immediately
+  if (body.startsWith("{")) {
+    try {
+      const json = JSON.parse(body);
+      if (json.type === "url_verification") {
+        return new Response(
+          JSON.stringify({ challenge: json.challenge }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+    } catch {
+      // Not JSON — continue to normal flow
+    }
+  }
+
   // Verify request is from Slack
   const verified = await verifySlackRequest(req, body);
   if (!verified) {
@@ -744,6 +1354,11 @@ Deno.serve(async (req: Request) => {
 
   const params = new URLSearchParams(body);
   const payload = parsePayload(params, body);
+
+  // Events API: reaction events
+  if (payload.type === "event_callback") {
+    return handleEventCallback(payload as EventPayload);
+  }
 
   if (payload.type === "view_submission") {
     return handleViewSubmission(payload as InteractionPayload);
