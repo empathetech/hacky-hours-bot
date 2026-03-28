@@ -17,6 +17,7 @@ flowchart LR
     EF -->|query/insert| PG[Supabase Postgres]
     EF -->|views.open\nBlock Kit responses| SA
     SA -->|interaction payload| EF
+    SA -->|event: reaction_added/removed| EF
     SA -->|modal / message| U
 ```
 
@@ -25,8 +26,9 @@ flowchart LR
 2. Slack sends an HTTP POST to the Edge Function URL
 3. Edge Function parses the command, queries/writes Postgres, and responds
 4. For `/hacky-hours submit`: Edge Function calls back to Slack to open a modal, then handles the submission payload when the user completes it
+5. For votes: Slack sends `reaction_added`/`reaction_removed` events for tracked vote messages
 
-This is a **two-way integration** — the Edge Function both receives requests from Slack and calls back to the Slack API.
+This is a **two-way integration** — the Edge Function both receives requests from Slack and calls back to the Slack API. As of v0.4.0, it also receives **Events API** callbacks for reaction tracking.
 
 ---
 
@@ -39,7 +41,9 @@ This is a **two-way integration** — the Edge Function both receives requests f
 **Configuration required:**
 - Slash command (`/hacky-hours`) pointing to the Edge Function URL
 - Interactivity Request URL (same Edge Function URL) for modal submissions
-- Bot Token Scopes: `commands`, `chat:write`, `channels:history`, `groups:history`
+- Event Subscriptions URL (same Edge Function URL) for reaction events (v0.4.0+)
+- Bot Event Subscriptions: `reaction_added`, `reaction_removed` (v0.4.0+)
+- Bot Token Scopes: `commands`, `chat:write`, `channels:history`, `groups:history`, `reactions:read` (v0.4.0+)
 
 **UI approach:** Block Kit for all responses. Modals for `submit`. Formatted blocks for `list`, `get`, `random`, `pick`.
 
@@ -140,6 +144,87 @@ The `trigger_id` is ephemeral (valid for ~3 seconds) — the `views.open` call m
 - Bot token scopes: `channels:history` (public), `groups:history` (private channels)
 - One Slack API call: `conversations.replies`
 - Thread URL format: `https://<workspace>.slack.com/archives/<channel_id>/p<timestamp>`
+
+---
+
+## Vote System (v0.4.0)
+
+### Slack Events API Integration
+
+The vote system requires the **Slack Events API** to track emoji reactions in real time. This is a new integration pattern — previous commands used only slash commands and interaction payloads.
+
+**URL Verification:** When you first set the Event Subscriptions URL in the Slack app config, Slack sends a `url_verification` challenge. The Edge Function must respond with the challenge value to confirm ownership. This is a one-time handshake.
+
+**Event flow:**
+```mermaid
+sequenceDiagram
+    participant U as Slack User
+    participant S as Slack API
+    participant E as Edge Function
+    participant D as Postgres
+
+    Note over U,D: Vote Creation
+    U->>S: /hacky-hours vote
+    S->>E: HTTP POST (slash command)
+    E->>S: POST views.open (idea selector modal)
+    S->>U: Display modal
+    U->>S: Select ideas, name vote, submit
+    S->>E: HTTP POST (view_submission)
+    E->>D: INSERT into votes + vote_ideas
+    E->>S: POST chat.postMessage (vote message with emoji prompt)
+    S->>U: Vote message appears in channel
+
+    Note over U,D: Reaction Tracking
+    U->>S: Reacts with emoji on vote message
+    S->>E: HTTP POST (reaction_added event)
+    E->>D: Validate: not caller, vote is active
+    E-->>S: (remove reaction if invalid)
+
+    Note over U,D: Vote Close
+    U->>S: /hacky-hours close-vote [name]
+    S->>E: HTTP POST (slash command)
+    E->>S: GET reactions.get (tally reactions)
+    E->>D: Determine winners, handle ties
+    E->>S: POST chat.postMessage (results)
+```
+
+### Vote Command Flow
+
+`/hacky-hours vote` — opens a modal to create a new vote session.
+
+**Modal contents:**
+- Vote name (text input, required) — unique identifier for this vote
+- Idea selector (multi-select from open_ideas, required) — which ideas to vote on
+- Duration (text input, optional) — e.g., "5m", "1h", "30s". NULL = manual close only.
+
+**After submission:**
+1. Validate max concurrent votes not exceeded (configurable, default 5)
+2. Insert into `votes` and `vote_ideas` tables
+3. Post a formatted message to the channel listing the ideas and prompting users to react with the designated emoji
+4. The caller is noted in the message as the vote facilitator
+
+### Close Vote Flow
+
+`/hacky-hours close-vote [name]` — tallies reactions and determines the winner.
+
+**Steps:**
+1. Look up the vote by name
+2. Only the caller can close the vote (or anyone if the vote has expired)
+3. Call `reactions.get` on the vote message to get current reactions
+4. Filter to the designated emoji, exclude the bot, exclude the caller
+5. Count votes per idea (one vote per user — if a user reacted to multiple ideas, count all)
+6. **Tie resolution:** If there's a tie for first place, ask the caller to choose:
+   - Option 1: Bot decides (random selection among tied ideas)
+   - Option 2: Caller decides (present tied ideas, caller picks)
+7. Winning idea(s) go through the existing `pick` flow (move to `closed_ideas`)
+8. Post results to the channel
+9. Delete the vote record from the database
+
+### Configuration
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `MAX_OPEN_VOTES` | Maximum concurrent active votes | `5` |
 
 ---
 

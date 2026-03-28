@@ -1,21 +1,27 @@
-# ITERATION.md — Post v0.1.0
+# Iteration — Post v0.3.1
 
 ## Raw Capture
 
-### V2 Promotions
+### Bug — `/hacky-hours save` was broken (SHIPPED as v0.3.1)
+- Slack slash commands don't include `thread_ts` in their payload
+- Command always errored, even from inside a thread
+- Fix: accept a pasted thread link as argument, parse channel + timestamp from URL
+- Also improved error messages to surface actual Slack API errors
 
-Promoting two V2 items to next milestone:
-1. `/hacky-hours save` — thread-to-markdown formatting, pre-fills submit modal
-2. Service account option for Google Sheet access (with runbook for both pathways)
+### CI — GitHub Actions deploy workflow fails on `db push`
+- `supabase db push` requires `SUPABASE_DB_PASSWORD` which isn't in GitHub Actions secrets
+- Function deploy step never runs because migration step fails first
+- Fix: add the secret and pass it as env var in workflow
 
-### Deferred
-
-- LLM-based thread synthesis for `save` — deferred to a future milestone. Needs design work (provider, config, cost model) before building.
+### Feature — Vote on ideas
+- Let community members vote on ideas to surface interest
+- Needs: data model (votes table), vote limits (one per user per idea), display in `list`/`get`
+- Consider: unvote, vote count sorting, preventing self-votes
 
 ## Triage
 
 | Item | Priority | Design impact |
-|------|----------|--------------|
-| `/hacky-hours save` | Next milestone | Already designed in ARCHITECTURE.md |
-| Service account option | Next milestone | Already designed in SECURITY_PRIVACY.md |
-| LLM thread synthesis | Future | Needs design — deferred |
+|------|----------|---------------|
+| Save command fix | SHIPPED (v0.3.1) | ARCHITECTURE.md updated |
+| CI secret fix | Next milestone | No design impact — config only |
+| Vote feature | Next milestone | DATA_MODEL.md, ARCHITECTURE.md, SECURITY_PRIVACY.md |

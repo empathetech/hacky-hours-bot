@@ -18,7 +18,12 @@
 | Picked-by user ID | Slack command payload (`user_id`) | Supabase Postgres | Who claimed the idea |
 | Picked timestamp | Auto-generated | Supabase Postgres | When the idea was claimed |
 
-**What we don't store:** emails, passwords, display names, profile photos, auth tokens, or any PII beyond Slack user IDs.
+| Vote name | User input (modal) | Supabase Postgres | Lookup key for `close-vote` |
+| Vote caller ID | Slack command payload (`user_id`) | Supabase Postgres | Who called the vote — excluded from voting unless tiebreaker |
+| Vote channel + message | Slack API response | Supabase Postgres | Tracks which message to read reactions from |
+| Vote expiry | User input (modal, optional) | Supabase Postgres | Auto-close time |
+
+**What we don't store:** emails, passwords, display names, profile photos, auth tokens, or any PII beyond Slack user IDs. Reaction data (who voted for what) is read from Slack at tally time and not persisted.
 
 ---
 
@@ -28,9 +33,11 @@
 
 This is a security improvement over the previous Apps Script architecture, which could not access HTTP headers and relied on the deprecated verification token.
 
-**Authorization:** None — any member of the Slack workspace can use all commands. No admin vs. user roles. Anyone can submit, list, get, random, pick, or save. The `picked_by` field tracks who claimed an idea, but there's no restriction on who can do it.
+**Authorization:** Minimal role-based restrictions. Any workspace member can use all commands. The one exception: only the vote caller can close their vote (or anyone if the vote has expired). The `picked_by` field tracks who claimed an idea, but there's no restriction on who can do it.
 
 **The `save` command** requires `channels:history` and `groups:history` scopes, granting the bot read access to channel messages. The README should explain this scope expansion clearly.
+
+**The `vote` system** requires `reactions:read` scope and Events API subscription for `reaction_added`/`reaction_removed`. The bot reads reactions only on its own vote messages — not arbitrary channel messages. Vote callers are excluded from voting to prevent self-selection bias (unless resolving a tiebreaker).
 
 ---
 
@@ -81,6 +88,8 @@ If it returns data, RLS is not configured correctly — rerun the migration.
 | `service_role` key leaked | Key exists only in Supabase's Edge Function environment — never in code, never in git, never in HTTP responses |
 | Supabase project URL leaked | Without the `service_role` key, only the `anon` key can be used, which has zero access due to RLS |
 | Edge Function URL leaked | Without the Slack signing secret, requests are rejected |
+| Vote manipulation via extra reactions | One-user-one-vote enforced at tally time by deduplicating Slack user IDs; caller excluded from count |
+| Unauthorized vote close | Only the caller can close a vote; expired votes can be closed by anyone |
 
 ---
 

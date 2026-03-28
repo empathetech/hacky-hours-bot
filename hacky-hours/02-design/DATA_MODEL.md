@@ -111,6 +111,72 @@ ALTER TABLE closed_ideas ENABLE ROW LEVEL SECURITY;
 | `get [name]` | Read | `SELECT * FROM open_ideas WHERE lower(name) = lower(...)` |
 | `random` | Read | `SELECT * FROM open_ideas ORDER BY random() LIMIT 1` |
 | `pick [name]` | Read + Insert + Delete | Find row, `INSERT INTO closed_ideas (...)`, `DELETE FROM open_ideas WHERE id = ...` |
+| `save [link]` | Read (Slack API) + modal | No database operation until user submits the modal |
+| `vote` | Insert + Slack API | `INSERT INTO votes`, `INSERT INTO vote_ideas`, post vote message |
+| `close-vote [name]` | Read + tally + pick | Read reactions, tally, resolve ties, run pick flow for winners |
+
+---
+
+## Vote Tables (v0.4.0)
+
+```mermaid
+erDiagram
+    votes {
+        uuid id PK
+        text name UK
+        text caller_id
+        text channel_id
+        text message_ts
+        text emoji
+        integer max_winners
+        timestamptz expires_at
+        timestamptz created_at
+    }
+    vote_ideas {
+        uuid id PK
+        uuid vote_id FK
+        uuid idea_id FK
+    }
+    open_ideas ||--o{ vote_ideas : "included in vote"
+    votes ||--o{ vote_ideas : "contains"
+```
+
+### votes
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `uuid` | PRIMARY KEY, default `gen_random_uuid()` | Auto-generated unique ID |
+| `name` | `text` | NOT NULL, UNIQUE | User-chosen vote name. Lookup key for `close-vote`. |
+| `caller_id` | `text` | NOT NULL | Slack user ID of the person who called the vote. Cannot vote unless tiebreaker. |
+| `channel_id` | `text` | NOT NULL | Channel where the vote message was posted. |
+| `message_ts` | `text` | NOT NULL | Timestamp of the bot's vote message — used to read reactions. |
+| `emoji` | `text` | NOT NULL, default `'white_check_mark'` | Emoji used for voting on this poll. |
+| `max_winners` | `integer` | NOT NULL, default `1` | Number of ideas to select (for multi-winner votes). |
+| `expires_at` | `timestamptz` | | Optional auto-close time. NULL = manual close only. |
+| `created_at` | `timestamptz` | NOT NULL, default `now()` | When the vote was created. |
+
+### vote_ideas
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `uuid` | PRIMARY KEY, default `gen_random_uuid()` | Auto-generated unique ID |
+| `vote_id` | `uuid` | NOT NULL, REFERENCES `votes(id) ON DELETE CASCADE` | Which vote this belongs to |
+| `idea_id` | `uuid` | NOT NULL, REFERENCES `open_ideas(id)` | Which idea is being voted on |
+
+Unique constraint on `(vote_id, idea_id)` — an idea can only appear once per vote.
+
+### Operations
+
+| Command | Operation | SQL |
+|---------|-----------|-----|
+| `vote` | Insert vote + vote_ideas, post message | `INSERT INTO votes ...`, `INSERT INTO vote_ideas ...` |
+| `close-vote [name]` | Read reactions, tally, resolve ties, pick winners | `SELECT` from votes + vote_ideas, then `pick` flow for winners |
+
+### Limits
+
+- **Max concurrent votes:** 5 (configurable via `MAX_OPEN_VOTES` env var, default `5`)
+- **Enforced at insert time:** reject if `SELECT count(*) FROM votes` >= limit
+- **Stale vote cleanup:** votes with `expires_at` in the past are auto-closed on next interaction (lazy cleanup)
 
 ---
 
