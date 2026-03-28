@@ -7,6 +7,20 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.1] — 2026-03-28
+
+### Fixed
+
+- Vote caller's emoji reaction no longer removes the bot's seeded reaction — Slack's API only allows removing your own reactions, so the bot was accidentally removing its own prompt emoji. Caller exclusion is now enforced only at tally time.
+- Bot now sends an ephemeral message to the vote caller when they react, reminding them their vote won't count unless there's a tie.
+
+### Added
+
+- Interactive tiebreak resolution — when a vote ends in a tie, the bot posts buttons: "Bot decides" (random) or one button per tied idea for the caller to pick directly
+- Vote collection message is now deleted from the channel after a vote closes, keeping the channel clean. Results message is preserved.
+
+---
+
 ## [0.4.0] — 2026-03-28
 
 ### Added — Vote System

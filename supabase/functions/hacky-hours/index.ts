@@ -42,7 +42,14 @@ interface EventPayload {
   };
 }
 
-type Payload = SlashPayload | InteractionPayload | EventPayload;
+interface BlockActionsPayload {
+  type: "block_actions";
+  actions: Array<{ action_id: string; value: string }>;
+  user_id: string;
+  channel_id: string;
+}
+
+type Payload = SlashPayload | InteractionPayload | EventPayload | BlockActionsPayload;
 
 interface Idea {
   id: string;
@@ -138,10 +145,21 @@ function parsePayload(params: URLSearchParams, body: string): Payload {
     }
   }
 
-  // Interaction payloads (modals) come as a JSON string in a 'payload' parameter
+  // Interaction payloads (modals + button actions) come as a JSON string in a 'payload' parameter
   const payloadStr = params.get("payload");
   if (payloadStr) {
     const interaction = JSON.parse(payloadStr);
+
+    // Button click (tiebreak actions)
+    if (interaction.type === "block_actions") {
+      return {
+        type: "block_actions" as const,
+        actions: interaction.actions,
+        user_id: interaction.user.id,
+        channel_id: interaction.channel?.id ?? "",
+      } as unknown as Payload;
+    }
+
     return {
       type: "view_submission",
       callback_id: interaction.view?.callback_id ?? "",
@@ -589,7 +607,7 @@ async function tallyAndCloseVote(vote: Vote, responseChannelId: string): Promise
     .eq("vote_id", vote.id);
 
   if (!voteIdeas || voteIdeas.length === 0) {
-    await supabase.from("votes").delete().eq("id", vote.id);
+    await cleanupVote(supabase, vote);
     return jsonResponse({ text: "Vote had no ideas. Cleaned up." });
   }
 
@@ -628,7 +646,7 @@ async function tallyAndCloseVote(vote: Vote, responseChannelId: string): Promise
     .in("id", ideaIds);
 
   if (!ideas || ideas.length === 0) {
-    await supabase.from("votes").delete().eq("id", vote.id);
+    await cleanupVote(supabase, vote);
     return jsonResponse({ text: "The ideas in this vote are no longer available." });
   }
 
@@ -649,7 +667,6 @@ async function tallyAndCloseVote(vote: Vote, responseChannelId: string): Promise
   if (topCount === 0) {
     // No votes — bot picks randomly
     winnerIdea = results[Math.floor(Math.random() * results.length)].idea;
-    // Post results and pick
     await postMessage(vote.channel_id, {
       text: `Vote *${vote.name}* closed — no reactions received. Bot randomly selected *${winnerIdea.name}*.`,
     });
@@ -678,17 +695,35 @@ async function tallyAndCloseVote(vote: Vote, responseChannelId: string): Promise
       ],
     });
   } else {
-    // Tie — bot decides (random among tied)
-    winnerIdea = winners[Math.floor(Math.random() * winners.length)].idea;
+    // Tie — post results with interactive buttons for resolution
     const tiedNames = winners.map((w) => w.idea.name).join(", ");
     const resultsText = results
       .map((r) => `${r.idea.name}: ${r.voteCount} vote${r.voteCount === 1 ? "" : "s"}`)
       .join("\n");
+
+    // Build action buttons: one "Bot decides" + one per tied idea for caller to pick
+    const actions: Record<string, unknown>[] = [
+      {
+        type: "button",
+        text: { type: "plain_text", text: ":game_die: Bot decides" },
+        action_id: "tiebreak_bot",
+        value: JSON.stringify({ vote_id: vote.id }),
+      },
+    ];
+    for (const w of winners) {
+      actions.push({
+        type: "button",
+        text: { type: "plain_text", text: w.idea.name.substring(0, 75) },
+        action_id: `tiebreak_pick_${w.idea.id}`,
+        value: JSON.stringify({ vote_id: vote.id, idea_id: w.idea.id }),
+      });
+    }
+
     await postMessage(vote.channel_id, {
       blocks: [
         {
           type: "header",
-          text: { type: "plain_text", text: `Vote "${vote.name}" — Results` },
+          text: { type: "plain_text", text: `Vote "${vote.name}" — Tie!` },
         },
         {
           type: "section",
@@ -698,30 +733,128 @@ async function tallyAndCloseVote(vote: Vote, responseChannelId: string): Promise
           type: "section",
           text: {
             type: "mrkdwn",
-            text: `:scales: Tie between: ${tiedNames} (${topCount} vote${topCount === 1 ? "" : "s"} each)\n:game_die: Bot broke the tie — *${winnerIdea.name}* wins!`,
+            text: `:scales: Tie between: ${tiedNames} (${topCount} vote${topCount === 1 ? "" : "s"} each)\n<@${vote.caller_id}>, break the tie:`,
           },
+        },
+        {
+          type: "actions",
+          block_id: "tiebreak_actions",
+          elements: actions,
         },
       ],
     });
+
+    // Don't pick or clean up yet — wait for the tiebreak interaction
+    return jsonResponse({
+      text: `Vote *${vote.name}* has a tie! Waiting for <@${vote.caller_id}> to break it.`,
+    });
   }
 
-  // Pick the winning idea (move to closed_ideas)
-  await supabase.from("closed_ideas").insert({
-    name: winnerIdea.name,
-    submitter_id: winnerIdea.submitter_id,
-    description: winnerIdea.description,
-    features: winnerIdea.features,
-    submitted_at: winnerIdea.submitted_at,
-    picked_by: vote.caller_id,
-  });
-  await supabase.from("open_ideas").delete().eq("id", winnerIdea.id);
-
-  // Clean up the vote
-  await supabase.from("votes").delete().eq("id", vote.id);
+  // Pick the winning idea (move to closed_ideas) and clean up
+  await pickIdea(supabase, winnerIdea, vote.caller_id);
+  await cleanupVote(supabase, vote);
 
   return jsonResponse({
     text: `Vote *${vote.name}* closed. *${winnerIdea.name}* has been picked!`,
   });
+}
+
+// deno-lint-ignore no-explicit-any
+async function cleanupVote(supabase: any, vote: Vote): Promise<void> {
+  await deleteMessage(vote.channel_id, vote.message_ts);
+  await cleanupVote(supabase, vote);
+}
+
+// deno-lint-ignore no-explicit-any
+async function pickIdea(supabase: any, idea: Idea, pickedBy: string): Promise<void> {
+  await supabase.from("closed_ideas").insert({
+    name: idea.name,
+    submitter_id: idea.submitter_id,
+    description: idea.description,
+    features: idea.features,
+    submitted_at: idea.submitted_at,
+    picked_by: pickedBy,
+  });
+  await supabase.from("open_ideas").delete().eq("id", idea.id);
+}
+
+async function handleTiebreakAction(
+  actionId: string,
+  value: string,
+  userId: string,
+  channelId: string,
+): Promise<Response> {
+  const parsed = JSON.parse(value);
+  const supabase = getSupabaseClient();
+
+  // Look up the vote
+  const { data: vote } = await supabase
+    .from("votes")
+    .select("*")
+    .eq("id", parsed.vote_id)
+    .single();
+
+  if (!vote) {
+    return jsonResponse({ text: "This vote has already been resolved." });
+  }
+
+  // Only the caller can break the tie
+  if (userId !== vote.caller_id) {
+    return jsonResponse({
+      text: "Only the vote caller can break the tie.",
+      replace_original: false,
+      response_type: "ephemeral",
+    });
+  }
+
+  let winnerIdea: Idea;
+
+  if (actionId === "tiebreak_bot") {
+    // Bot decides — random among tied ideas
+    const { data: voteIdeas } = await supabase
+      .from("vote_ideas")
+      .select("idea_id")
+      .eq("vote_id", vote.id);
+
+    const ideaIds = (voteIdeas ?? []).map((vi: { idea_id: string }) => vi.idea_id);
+    const { data: ideas } = await supabase
+      .from("open_ideas")
+      .select("*")
+      .in("id", ideaIds);
+
+    if (!ideas || ideas.length === 0) {
+      await cleanupVote(supabase, vote);
+      return jsonResponse({ text: "Ideas are no longer available." });
+    }
+
+    winnerIdea = ideas[Math.floor(Math.random() * ideas.length)];
+    await postMessage(channelId, {
+      text: `:game_die: Bot broke the tie — *${winnerIdea.name}* wins!`,
+    });
+  } else {
+    // Caller picked a specific idea
+    const ideaId = parsed.idea_id;
+    const { data: idea } = await supabase
+      .from("open_ideas")
+      .select("*")
+      .eq("id", ideaId)
+      .single();
+
+    if (!idea) {
+      await cleanupVote(supabase, vote);
+      return jsonResponse({ text: "That idea is no longer available." });
+    }
+
+    winnerIdea = idea;
+    await postMessage(channelId, {
+      text: `<@${vote.caller_id}> broke the tie — *${winnerIdea.name}* wins!`,
+    });
+  }
+
+  await pickIdea(supabase, winnerIdea, vote.caller_id);
+  await cleanupVote(supabase, vote);
+
+  return jsonResponse({ text: `*${winnerIdea.name}* has been picked!` });
 }
 
 async function handleCreateVoteSubmission(
@@ -918,9 +1051,16 @@ async function handleEventCallback(payload: EventPayload): Promise<Response> {
     return new Response("", { status: 200 });
   }
 
-  // If the caller reacted, remove their reaction
+  // Slack's API only lets you remove your own reactions (the bot's), not
+  // another user's. So we can't remove the caller's reaction — instead,
+  // send them an ephemeral reminder that their vote won't count.
+  // Caller exclusion is enforced at tally time in tallyAndCloseVote.
   if (event.type === "reaction_added" && event.user === vote.caller_id) {
-    await removeReaction(event.item.channel, event.item.ts, event.reaction);
+    await postEphemeral(
+      event.item.channel,
+      event.user,
+      "As the vote caller, your reaction won't be counted in the tally (unless there's a tie to break).",
+    );
   }
 
   return new Response("", { status: 200 });
@@ -1045,6 +1185,41 @@ async function postMessage(
 
   const result = await res.json();
   return { ok: result.ok, ts: result.ts ?? "", error: result.error };
+}
+
+async function deleteMessage(
+  channelId: string,
+  timestamp: string,
+): Promise<void> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN");
+  if (!token) return;
+
+  await fetch("https://slack.com/api/chat.delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel: channelId, ts: timestamp }),
+  });
+}
+
+async function postEphemeral(
+  channelId: string,
+  userId: string,
+  text: string,
+): Promise<void> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN");
+  if (!token) return;
+
+  await fetch("https://slack.com/api/chat.postEphemeral", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ channel: channelId, user: userId, text }),
+  });
 }
 
 async function addReaction(
@@ -1358,6 +1533,16 @@ Deno.serve(async (req: Request) => {
   // Events API: reaction events
   if (payload.type === "event_callback") {
     return handleEventCallback(payload as EventPayload);
+  }
+
+  // Button clicks (tiebreak resolution)
+  if (payload.type === "block_actions") {
+    const ba = payload as BlockActionsPayload;
+    const action = ba.actions[0];
+    if (action && action.action_id.startsWith("tiebreak_")) {
+      return handleTiebreakAction(action.action_id, action.value, ba.user_id, ba.channel_id);
+    }
+    return new Response("", { status: 200 });
   }
 
   if (payload.type === "view_submission") {
